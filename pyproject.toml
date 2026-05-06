@@ -1,0 +1,90 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "audd"
+dynamic = ["version"]
+description = "Official Python SDK for the AudD music recognition API."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "AudD", email = "api@audd.io" }]
+keywords = ["audd", "music-recognition", "audio", "fingerprinting"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Multimedia :: Sound/Audio :: Analysis",
+  "Typing :: Typed",
+]
+dependencies = [
+  "httpx>=0.27,<1",
+  "pydantic>=2.5,<3",
+  "anyio>=4",
+]
+
+[project.urls]
+Homepage = "https://audd.io"
+Documentation = "https://docs.audd.io"
+Source = "https://github.com/AudDMusic/audd-python"
+Issues = "https://github.com/AudDMusic/audd-python/issues"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.23",
+  "respx>=0.21",
+  "mypy>=1.10",
+  "ruff>=0.5",
+  "pyyaml>=6",
+  "jsonschema>=4.21",
+  "referencing>=0.35",
+]
+
+[tool.hatch.version]
+path = "src/audd/_version.py"
+
+[tool.hatch.build.targets.sdist]
+include = ["src/audd", "README.md", "LICENSE", "CHANGELOG.md"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/audd"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+  "integration: opt-in tests that hit the live AudD API (requires AUDD_API_TOKEN env var)",
+]
+
+[tool.mypy]
+strict = true
+python_version = "3.9"
+files = ["src/audd"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N", "PL", "RUF"]
+ignore = [
+  "PLR0913",  # too many args — recognize_enterprise legitimately has many kwargs
+  "PLC0415",  # lazy imports inside namespace getters break circular imports
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["PLR2004", "PLR0915", "S101", "E501"]  # magic values, long tests, asserts, line length
+"examples/**/*.py" = ["PLR2004"]  # argv-count comparisons in example scripts
+"src/audd/models.py" = ["N815"]  # Apple Music/Napster ship camelCase JSON keys; field names must match
