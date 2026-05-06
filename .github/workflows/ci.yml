@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: tests + mypy + ruff
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install
+        run: |
+          pip install --upgrade pip
+          pip install -e '.[dev]'
+      - name: Ruff
+        run: python -m ruff check src/audd/ tests/
+      - name: Mypy
+        run: python -m mypy src/audd/
+      - name: Unit tests
+        run: python -m pytest tests/unit/ -v --tb=short
