@@ -15,7 +15,7 @@ from audd.errors import (
     AudDSerializationError,
     raise_from_error_response,
 )
-from audd.models import LyricsResult
+from audd.models import LyricsResult, _coerce_model_list
 
 API_BASE = "https://api.audd.io"
 
@@ -29,7 +29,7 @@ class Advanced:
         body = self.raw_request("findLyrics", {"q": query})
         if body.get("status") == "error":
             raise_from_error_response(body, http_status=200, request_id=None)
-        return [LyricsResult.model_validate(r) for r in (body.get("result") or [])]
+        return _coerce_model_list(body.get("result"), LyricsResult)
 
     def raw_request(
         self,
@@ -64,7 +64,7 @@ class AsyncAdvanced:
         body = await self.raw_request("findLyrics", {"q": query})
         if body.get("status") == "error":
             raise_from_error_response(body, http_status=200, request_id=None)
-        return [LyricsResult.model_validate(r) for r in (body.get("result") or [])]
+        return _coerce_model_list(body.get("result"), LyricsResult)
 
     async def raw_request(
         self,

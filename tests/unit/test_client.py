@@ -141,6 +141,45 @@ def test_recognize_enterprise_returns_list_of_matches() -> None:
 
 
 @respx.mock
+def test_recognize_enterprise_song_without_score_parses() -> None:
+    """Enterprise endpoint legitimately returns songs with no score (and no
+    isrc/upc/label) — e.g. YouTube-sourced entries. The decode path must not
+    raise; the match parses with score is None."""
+    respx.post("https://enterprise.audd.io/").mock(
+        return_value=httpx.Response(200, json={
+            "status": "success",
+            "result": [{
+                "songs": [{
+                    "timecode": "00:11", "artist": "X", "title": "Y",
+                    "song_link": "https://youtu.be/abc",
+                }],
+                "offset": "00:00",
+            }],
+        }),
+    )
+    matches = AudD(api_token="t-test").recognize_enterprise("https://example.mp3", limit=1)
+    assert len(matches) == 1
+    assert matches[0].score is None
+    assert matches[0].isrc is None
+    assert matches[0].artist == "X"
+
+
+@respx.mock
+def test_recognize_missing_timecode_parses() -> None:
+    """A recognition result missing timecode must parse, not raise."""
+    respx.post("https://api.audd.io/").mock(
+        return_value=httpx.Response(200, json={
+            "status": "success",
+            "result": {"artist": "X", "title": "Y"},
+        }),
+    )
+    result = AudD(api_token="t-test").recognize("https://example.mp3")
+    assert isinstance(result, RecognitionResult)
+    assert result.timecode is None
+    assert result.artist == "X"
+
+
+@respx.mock
 def test_recognize_enterprise_unauthorized_raises_subscription_error() -> None:
     respx.post("https://enterprise.audd.io/").mock(
         return_value=httpx.Response(200, json={

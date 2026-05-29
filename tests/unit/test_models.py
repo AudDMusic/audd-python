@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from audd.models import (
     AppleMusicMetadata,
+    EnterpriseChunkResult,
     EnterpriseMatch,
     LyricsResult,
     RecognitionResult,
@@ -169,6 +170,109 @@ def test_recognition_result_pretty_print_includes_extras() -> None:
     assert '"artist": "X"' in out
     assert '"weird_unknown_field"' in out
     assert out.endswith("\n")
+
+
+def test_enterprise_match_missing_score_does_not_raise() -> None:
+    """The enterprise endpoint returns songs with no ``score`` (and no
+    isrc/upc/label) — e.g. YouTube-sourced entries. Parsing must succeed and
+    yield score is None rather than raising."""
+    e = EnterpriseMatch.model_validate({
+        "timecode": "00:11", "artist": "X", "title": "Y",
+    })
+    assert e.score is None
+    assert e.isrc is None
+    assert e.upc is None
+    assert e.label is None
+    assert e.artist == "X"
+
+
+def test_enterprise_chunk_with_scoreless_song_parses() -> None:
+    """A full enterprise chunk whose song lacks ``score`` must parse."""
+    chunk = EnterpriseChunkResult.model_validate({
+        "offset": "0",
+        "songs": [
+            {"timecode": "00:00", "artist": "A", "title": "B"},
+            {"score": 95, "timecode": "00:30", "artist": "C", "title": "D"},
+        ],
+    })
+    assert len(chunk.songs) == 2
+    assert chunk.songs[0].score is None
+    assert chunk.songs[1].score == 95
+
+
+def test_enterprise_chunk_skips_malformed_song_element() -> None:
+    """A malformed (non-object) song element is skipped, not fatal."""
+    chunk = EnterpriseChunkResult.model_validate({
+        "songs": ["not-an-object", {"timecode": "00:00", "artist": "A"}],
+    })
+    assert len(chunk.songs) == 1
+    assert chunk.songs[0].artist == "A"
+    assert chunk.songs[0].score is None
+
+
+def test_enterprise_chunk_missing_songs_degrades_to_empty() -> None:
+    chunk = EnterpriseChunkResult.model_validate({"offset": "0"})
+    assert chunk.songs == []
+
+
+def test_recognition_result_missing_timecode_parses() -> None:
+    """A recognition result with no ``timecode`` must parse without raising."""
+    r = RecognitionResult.model_validate({"artist": "X", "title": "Y"})
+    assert r.timecode is None
+    assert r.artist == "X"
+    assert r.is_public_match is True
+
+
+def test_recognition_result_empty_object_parses() -> None:
+    """An empty result object must not raise."""
+    r = RecognitionResult.model_validate({})
+    assert r.timecode is None
+    assert r.artist is None
+
+
+def test_recognition_result_musicbrainz_skips_bad_element() -> None:
+    r = RecognitionResult.model_validate({
+        "timecode": "00:00",
+        "musicbrainz": ["bad", {"id": "mbid", "title": "T"}],
+    })
+    assert r.musicbrainz is not None
+    assert len(r.musicbrainz) == 1
+    assert r.musicbrainz[0].id == "mbid"
+
+
+def test_recognition_result_musicbrainz_not_a_list_degrades() -> None:
+    r = RecognitionResult.model_validate({
+        "timecode": "00:00", "musicbrainz": "oops",
+    })
+    assert r.musicbrainz == []
+
+
+def test_stream_callback_song_missing_score_parses() -> None:
+    s = StreamCallbackSong.model_validate({"artist": "X", "title": "Y"})
+    assert s.score is None
+    assert s.artist == "X"
+
+
+def test_stream_callback_match_malformed_alternative_skipped() -> None:
+    m = StreamCallbackMatch.model_validate({
+        "radio_id": 7,
+        "song": {"artist": "X", "title": "Y", "score": 100},
+        "alternatives": ["nope", {"artist": "X2", "title": "Y2"}],
+    })
+    assert len(m.alternatives) == 1
+    assert m.alternatives[0].artist == "X2"
+
+
+def test_stream_callback_notification_missing_fields_parse() -> None:
+    n = StreamCallbackNotification.model_validate({"radio_id": 3})
+    assert n.notification_code is None
+    assert n.notification_message is None
+
+
+def test_lyrics_result_missing_fields_parse() -> None:
+    lyric = LyricsResult.model_validate({})
+    assert lyric.artist is None
+    assert lyric.title is None
 
 
 def test_enterprise_match_repr_and_pretty_print() -> None:

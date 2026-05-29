@@ -188,17 +188,26 @@ def _decode_or_raise(resp: HTTPResponse) -> dict[str, Any]:
 def _decode_recognize(resp: HTTPResponse) -> RecognitionResult | None:
     body = _decode_or_raise(resp)
     result = body.get("result")
-    if result is None:
+    # No-match responses carry result: null (or, rarely, a non-object falsy
+    # value). Treat anything that isn't a dict as "no match" rather than raising.
+    if not isinstance(result, dict):
         return None
     return RecognitionResult.model_validate(result)
 
 
 def _decode_enterprise(resp: HTTPResponse) -> list[EnterpriseMatch]:
     body = _decode_or_raise(resp)
-    chunks_raw = body.get("result") or []
+    chunks_raw = body.get("result")
     out: list[EnterpriseMatch] = []
+    # A successful response must never raise on a missing/odd-typed result.
+    # Skip anything that isn't a chunk object instead of aborting the parse.
+    if not isinstance(chunks_raw, list):
+        return out
     for chunk_dict in chunks_raw:
-        chunk = EnterpriseChunkResult.model_validate(chunk_dict)
+        try:
+            chunk = EnterpriseChunkResult.model_validate(chunk_dict)
+        except Exception:  # noqa: BLE001 — degrade, never raise on response parse
+            continue
         out.extend(chunk.songs)
     return out
 

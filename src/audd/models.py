@@ -6,7 +6,7 @@ import sys
 from typing import Any, Literal, TextIO
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 # Streaming providers reachable via the lis.tn `?<provider>` redirect helper.
 _STREAMING_PROVIDERS: tuple[str, ...] = (
@@ -35,6 +35,28 @@ class _Forward(BaseModel):
     """Base for every model — accepts unknown fields and exposes them in model_extra."""
 
     model_config = ConfigDict(extra="allow", populate_by_name=True, str_strip_whitespace=False)
+
+
+def _coerce_model_list(value: Any, model: type[BaseModel]) -> list[Any]:
+    """Best-effort list-of-model coercion that never raises.
+
+    A successful API response must parse even when a list field is missing,
+    is not a list, or carries a malformed element. Missing/None/non-list →
+    empty list; each element that fails validation is skipped rather than
+    aborting the whole parse.
+    """
+    if not isinstance(value, list):
+        return []
+    out: list[Any] = []
+    for item in value:
+        if isinstance(item, model):
+            out.append(item)
+            continue
+        try:
+            out.append(model.model_validate(item))
+        except Exception:  # noqa: BLE001 — degrade, never raise on response parse
+            continue
+    return out
 
 
 class AppleMusicMetadata(_Forward):
@@ -77,14 +99,14 @@ class NapsterMetadata(_Forward):
 
 
 class MusicBrainzEntry(_Forward):
-    id: str
+    id: str | None = None
     score: int | str | None = None
     title: str | None = None
     length: int | None = None
 
 
 class RecognitionResult(_Forward):
-    timecode: str
+    timecode: str | None = None
     audio_id: int | None = None
     artist: str | None = None
     title: str | None = None
@@ -99,6 +121,13 @@ class RecognitionResult(_Forward):
     deezer: DeezerMetadata | None = None
     napster: NapsterMetadata | None = None
     musicbrainz: list[MusicBrainzEntry] | None = None
+
+    @field_validator("musicbrainz", mode="before")
+    @classmethod
+    def _coerce_musicbrainz(cls, v: Any) -> Any:
+        if v is None:
+            return None
+        return _coerce_model_list(v, MusicBrainzEntry)
 
     def __repr__(self) -> str:
         parts: list[str] = []
@@ -254,8 +283,8 @@ class RecognitionResult(_Forward):
 
 
 class EnterpriseMatch(_Forward):
-    score: int
-    timecode: str
+    score: int | None = None
+    timecode: str | None = None
     artist: str | None = None
     title: str | None = None
     album: str | None = None
@@ -315,14 +344,19 @@ class EnterpriseMatch(_Forward):
 
 
 class EnterpriseChunkResult(_Forward):
-    songs: list[EnterpriseMatch]
-    offset: str
+    songs: list[EnterpriseMatch] = []
+    offset: str | None = None
+
+    @field_validator("songs", mode="before")
+    @classmethod
+    def _coerce_songs(cls, v: Any) -> Any:
+        return _coerce_model_list(v, EnterpriseMatch)
 
 
 class Stream(_Forward):
-    radio_id: int
-    url: str
-    stream_running: bool
+    radio_id: int | None = None
+    url: str | None = None
+    stream_running: bool | None = None
     longpoll_category: str | None = None
 
 
@@ -334,9 +368,9 @@ class StreamCallbackSong(_Forward):
     (variant releases, different masters, regional editions).
     """
 
-    artist: str
-    title: str
-    score: int
+    artist: str | None = None
+    title: str | None = None
+    score: int | None = None
     album: str | None = None
     release_date: str | None = None
     label: str | None = None
@@ -348,6 +382,13 @@ class StreamCallbackSong(_Forward):
     deezer: DeezerMetadata | None = None
     napster: NapsterMetadata | None = None
     musicbrainz: list[MusicBrainzEntry] | None = None
+
+    @field_validator("musicbrainz", mode="before")
+    @classmethod
+    def _coerce_musicbrainz(cls, v: Any) -> Any:
+        if v is None:
+            return None
+        return _coerce_model_list(v, MusicBrainzEntry)
 
 
 class StreamCallbackMatch(_Forward):
@@ -362,21 +403,26 @@ class StreamCallbackMatch(_Forward):
     :py:attr:`pydantic.BaseModel.model_extra`.
     """
 
-    radio_id: int
+    radio_id: int | None = None
     timestamp: str | None = None
     play_length: int | None = None
-    song: StreamCallbackSong
+    song: StreamCallbackSong | None = None
     alternatives: list[StreamCallbackSong] = []
     raw_response: dict[str, Any] | None = None
+
+    @field_validator("alternatives", mode="before")
+    @classmethod
+    def _coerce_alternatives(cls, v: Any) -> Any:
+        return _coerce_model_list(v, StreamCallbackSong)
 
 
 class StreamCallbackNotification(_Forward):
     """Stream lifecycle event (e.g. ``stream stopped``, ``can't connect``)."""
 
-    radio_id: int
+    radio_id: int | None = None
     stream_running: bool | None = None
-    notification_code: int
-    notification_message: str
+    notification_code: int | None = None
+    notification_message: str | None = None
     # Outer ``time`` field on the callback envelope (epoch seconds).
     # Sits next to the ``notification`` block in the JSON, not inside it.
     time: int | None = None
@@ -384,8 +430,8 @@ class StreamCallbackNotification(_Forward):
 
 
 class LyricsResult(_Forward):
-    artist: str
-    title: str
+    artist: str | None = None
+    title: str | None = None
     lyrics: str | None = None
     song_id: int | None = None
     media: str | None = None
