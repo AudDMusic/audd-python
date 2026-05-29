@@ -206,7 +206,7 @@ def _decode_enterprise(resp: HTTPResponse) -> list[EnterpriseMatch]:
     for chunk_dict in chunks_raw:
         try:
             chunk = EnterpriseChunkResult.model_validate(chunk_dict)
-        except Exception:  # noqa: BLE001 — degrade, never raise on response parse
+        except Exception:  # degrade, never raise on response parse
             continue
         out.extend(chunk.songs)
     return out

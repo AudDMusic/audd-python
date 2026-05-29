@@ -54,7 +54,7 @@ def _coerce_model_list(value: Any, model: type[BaseModel]) -> list[Any]:
             continue
         try:
             out.append(model.model_validate(item))
-        except Exception:  # noqa: BLE001 — degrade, never raise on response parse
+        except Exception:  # degrade, never raise on response parse
             continue
     return out
 
