@@ -29,6 +29,7 @@ from audd.models import (
     Stream,
     StreamCallbackMatch,
     StreamCallbackNotification,
+    _coerce_model_list,
 )
 
 API_BASE = "https://api.audd.io"
@@ -577,8 +578,8 @@ class Streams(_StreamsBase):
         self._post("deleteStream", {"radio_id": str(radio_id)}, self._mutating)
 
     def list(self) -> list[Stream]:
-        result = self._post("getStreams", {}, self._read) or []
-        return [Stream.model_validate(s) for s in result]
+        result = self._post("getStreams", {}, self._read)
+        return _coerce_model_list(result, Stream)
 
     def handle_callback(
         self, request: Any,
@@ -718,8 +719,8 @@ class AsyncStreams(_StreamsBase):
         await self._post("deleteStream", {"radio_id": str(radio_id)}, self._mutating)
 
     async def list(self) -> list[Stream]:
-        result = await self._post("getStreams", {}, self._read) or []
-        return [Stream.model_validate(s) for s in result]
+        result = await self._post("getStreams", {}, self._read)
+        return _coerce_model_list(result, Stream)
 
     async def handle_callback(
         self, request: Any,
