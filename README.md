@@ -101,7 +101,7 @@ print(result.preview_url())          # first preview across requested providers,
 
 Valid `return_metadata` values: `apple_music`, `spotify`, `deezer`, `napster`, `musicbrainz`. Attributes are `None` when not requested.
 
-`EnterpriseMatch` (returned by `recognize_enterprise`) carries the same core tags plus `score`, `start_offset`, `end_offset`, `isrc`, `upc`. Access to `isrc`, `upc`, and `score` requires a Startup plan or higher — [contact us](mailto:api@audd.io) for enterprise features.
+`EnterpriseMatch` (returned by `recognize_enterprise`) carries the same core tags plus `score`, `isrc`, `upc`, and — the fields you need for a long file — **`start_seconds` and `end_seconds`**: where this song plays in your file, in seconds (e.g. `64.2` to `71.8`). Feed them straight to a player or `ffmpeg`. They're computed for you while parsing the chunked enterprise response, and `recognize_enterprise` requests accurate offsets by default so they're precise to the sub-second. (`start_offset`/`end_offset` are the raw millisecond positions *within* AudD's internal 12-second scan fragment that these are derived from; you rarely need them directly.) Access to `isrc`, `upc`, and `score` requires a Startup plan or higher — [contact us](mailto:api@audd.io) for enterprise features.
 
 For ad-hoc inspection during development, `result.pretty_print()` dumps the full state — typed fields plus everything in `model_extra` — as indented JSON.
 

@@ -37,6 +37,24 @@ class _Forward(BaseModel):
     model_config = ConfigDict(extra="allow", populate_by_name=True, str_strip_whitespace=False)
 
 
+def _offset_to_seconds(offset: str | None) -> float | None:
+    """Parse a chunk offset (``"SS"``, ``"MM:SS"``, or ``"HH:MM:SS"``, or a
+    bare number) into seconds. Returns ``None`` for missing/unparseable input —
+    response parsing never raises on a malformed field."""
+    if offset is None:
+        return None
+    text = str(offset).strip()
+    if not text:
+        return None
+    try:
+        total = 0.0
+        for part in text.split(":"):
+            total = total * 60 + float(part)
+        return total
+    except ValueError:
+        return None
+
+
 def _coerce_model_list(value: Any, model: type[BaseModel]) -> list[Any]:
     """Best-effort list-of-model coercion that never raises.
 
@@ -295,6 +313,13 @@ class EnterpriseMatch(_Forward):
     song_link: str | None = None
     start_offset: int | None = None
     end_offset: int | None = None
+    start_seconds: float | None = None
+    """Where this song starts in your file, in seconds (e.g. ``64.2``). Computed
+    by the client from the fragment's file position and the in-fragment offset.
+    ``None`` if the position can't be determined. ``start_offset``/``end_offset``
+    are the raw, fragment-relative millisecond values behind this."""
+    end_seconds: float | None = None
+    """Where this song ends in your file, in seconds. ``None`` if unknown."""
 
     def __repr__(self) -> str:
         parts: list[str] = []

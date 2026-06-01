@@ -25,7 +25,12 @@ from audd.errors import (
     AudDServerError,
     raise_from_error_response,
 )
-from audd.models import EnterpriseChunkResult, EnterpriseMatch, RecognitionResult
+from audd.models import (
+    EnterpriseChunkResult,
+    EnterpriseMatch,
+    RecognitionResult,
+    _offset_to_seconds,
+)
 
 API_BASE = "https://api.audd.io"
 ENTERPRISE_BASE = "https://enterprise.audd.io"
@@ -208,6 +213,14 @@ def _decode_enterprise(resp: HTTPResponse) -> list[EnterpriseMatch]:
             chunk = EnterpriseChunkResult.model_validate(chunk_dict)
         except Exception:  # degrade, never raise on response parse
             continue
+        # The file position lives on the chunk; the API drops it once we flatten
+        # to a song list. Resolve each match's absolute position in the file
+        # here (chunk offset + in-fragment offset) so callers don't lose it.
+        base = _offset_to_seconds(chunk.offset)
+        if base is not None:
+            for song in chunk.songs:
+                song.start_seconds = base + (song.start_offset or 0) / 1000
+                song.end_seconds = base + (song.end_offset or 0) / 1000
         out.extend(chunk.songs)
     return out
 
@@ -411,7 +424,7 @@ class AudD(_BaseClient):
         limit: int | None = None,
         skip_first_seconds: int | None = None,
         use_timecode: bool | None = None,
-        accurate_offsets: bool | None = None,
+        accurate_offsets: bool = True,
         timeout: float | None = None,
         extra_parameters: dict[str, str] | None = None,
     ) -> list[EnterpriseMatch]:
@@ -603,7 +616,7 @@ class AsyncAudD(_BaseClient):
         limit: int | None = None,
         skip_first_seconds: int | None = None,
         use_timecode: bool | None = None,
-        accurate_offsets: bool | None = None,
+        accurate_offsets: bool = True,
         timeout: float | None = None,
         extra_parameters: dict[str, str] | None = None,
     ) -> list[EnterpriseMatch]:
