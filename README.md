@@ -1,5 +1,6 @@
 # audd-python
 
+[![Powered by AudD](https://img.shields.io/badge/Music_Recognition-AudD_API-2a4eef)](https://audd.io)
 [![CI](https://github.com/AudDMusic/audd-python/actions/workflows/ci.yml/badge.svg)](https://github.com/AudDMusic/audd-python/actions/workflows/ci.yml)
 [![Contract](https://github.com/AudDMusic/audd-python/actions/workflows/contract.yml/badge.svg)](https://github.com/AudDMusic/audd-python/actions/workflows/contract.yml)
 [![PyPI](https://img.shields.io/pypi/v/audd.svg)](https://pypi.org/project/audd/)
