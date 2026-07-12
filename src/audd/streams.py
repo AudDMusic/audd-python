@@ -357,11 +357,12 @@ class _AsyncLongpollPoll:
     """
 
     def __init__(self) -> None:
-        # Bounded queues give natural backpressure: the poll task awaits put()
-        # when the consumer falls behind, so cancellation arrives at a yield
-        # point rather than spinning the event loop.
-        self._matches: asyncio.Queue[StreamCallbackMatch] = asyncio.Queue(maxsize=1)
-        self._notifications: asyncio.Queue[StreamCallbackNotification] = asyncio.Queue(maxsize=1)
+        # Unbounded queues, matching the sync path: the producer must never
+        # block on put(). With bounded queues, a consumer that only drains
+        # ``matches`` would stall the poll loop after two undrained lifecycle
+        # notifications, silently freezing the whole subscription.
+        self._matches: asyncio.Queue[StreamCallbackMatch] = asyncio.Queue()
+        self._notifications: asyncio.Queue[StreamCallbackNotification] = asyncio.Queue()
         # Errors is single-shot — never blocks the producer.
         self._errors: asyncio.Queue[Exception] = asyncio.Queue()
         self._stop = asyncio.Event()
@@ -455,6 +456,10 @@ async def _run_longpoll_async(
                 await poll._notifications.put(notif)
             if new_since is not None:
                 cur_since = new_since
+            # Cooperative yield: puts on unbounded queues never suspend, so
+            # guarantee consumers get scheduled at least once per poll cycle
+            # even when fetch resolves without touching the event loop.
+            await asyncio.sleep(0)
     finally:
         poll._terminated.set()
 
@@ -642,7 +647,9 @@ class Streams(_StreamsBase):
 
         def fetch(params: dict[str, Any]) -> Any:
             def _do() -> Any:
-                return self._http.get(LONGPOLL_URL, params=params)
+                # The longpoll endpoint authorizes by category alone and does
+                # not accept api_token — never send it here.
+                return self._http.get(LONGPOLL_URL, params=params, send_token=False)
             return retry_sync(_do, self._read)
 
         return _SyncLongpollPoll(fetch, category, since_time, timeout)
@@ -783,7 +790,9 @@ class AsyncStreams(_StreamsBase):
 
         async def fetch(params: dict[str, Any]) -> Any:
             async def _do() -> Any:
-                return await self._http.get(LONGPOLL_URL, params=params)
+                # The longpoll endpoint authorizes by category alone and does
+                # not accept api_token — never send it here.
+                return await self._http.get(LONGPOLL_URL, params=params, send_token=False)
             return await retry_async(_do, self._read)
 
         poll = _AsyncLongpollPoll()

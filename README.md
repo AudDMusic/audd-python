@@ -372,10 +372,6 @@ with LongpollConsumer(category="abc123def") as consumer:
 audd.custom_catalog.add(audio_id=42, source="https://my.song.mp3")
 ```
 
-## Spec contract
-
-This SDK is built against the [`audd-openapi`](https://github.com/AudDMusic/audd-openapi) spec. Contract tests in `tests/contract/` validate the parser against the canonical fixture set on every push, on a daily cron, and whenever the spec updates.
-
 ## License
 
 MIT — see [LICENSE](./LICENSE).

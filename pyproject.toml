@@ -9,7 +9,7 @@ description = "Official Python SDK for the AudD music recognition API."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
-authors = [{ name = "AudD", email = "api@audd.io" }]
+authors = [{ name = "AudD, LLC (https://audd.io)", email = "api@audd.io" }]
 keywords = ["audd", "music-recognition", "audio", "fingerprinting"]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
@@ -51,7 +51,7 @@ dev = [
 path = "src/audd/_version.py"
 
 [tool.hatch.build.targets.sdist]
-include = ["src/audd", "README.md", "LICENSE", "CHANGELOG.md"]
+include = ["src/audd", "README.md", "LICENSE"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/audd"]
@@ -66,7 +66,7 @@ markers = [
 
 [tool.mypy]
 strict = true
-python_version = "3.9"
+python_version = "3.10"
 files = ["src/audd"]
 
 [[tool.mypy.overrides]]
@@ -75,7 +75,7 @@ disallow_untyped_defs = false
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "N", "PL", "RUF"]

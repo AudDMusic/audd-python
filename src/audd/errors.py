@@ -147,6 +147,19 @@ def error_for_code(code: int) -> type[AudDAPIError]:
     return _CODE_MAP.get(code, AudDServerError)
 
 
+def _safe_error_code(value: Any) -> int:
+    """Coerce a server-provided error code to int. Anything unusable → 0.
+
+    Error envelopes are parsed leniently: a missing, ``None``, or non-numeric
+    ``error_code`` must not turn into a ``TypeError``/``ValueError`` that masks
+    the real API error.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _branded_message(result: Any) -> str | None:
     """Extract branded artist/title text from an error response's `result`, if present."""
     if not isinstance(result, dict):
@@ -167,8 +180,12 @@ def raise_from_error_response(
     custom_catalog_context: bool = False,
 ) -> None:
     """Inspect a server `status: error` body and raise the appropriate exception."""
-    err = body.get("error") or {}
-    code = int(err.get("error_code", 0))
+    err = body.get("error")
+    if not isinstance(err, dict):
+        # ``error`` may arrive as a bare string (or be missing entirely);
+        # surface it as the message rather than crashing on .get().
+        err = {"error_message": err} if isinstance(err, str) else {}
+    code = _safe_error_code(err.get("error_code", 0))
     message = str(err.get("error_message", ""))
     requested_params = body.get("request_params") or body.get("requested_params") or {}
     request_method = body.get("request_api_method")

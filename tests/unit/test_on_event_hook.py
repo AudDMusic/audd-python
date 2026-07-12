@@ -60,3 +60,16 @@ def test_on_event_hook_exception_is_swallowed() -> None:
     # Should NOT raise — hook errors are caught and logged at debug.
     client.recognize("https://x.mp3")
     client.close()
+
+
+@respx.mock
+def test_on_event_enterprise_uses_recognize_enterprise_method_name() -> None:
+    respx.post("https://enterprise.audd.io/").mock(
+        return_value=httpx.Response(200, json={"status": "success", "result": []}),
+    )
+    events: list[AudDEvent] = []
+    client = AudD(api_token="t", on_event=events.append)
+    client.recognize_enterprise("https://x.mp3", limit=1)
+    client.close()
+    assert events
+    assert all(e.method == "recognizeEnterprise" for e in events)

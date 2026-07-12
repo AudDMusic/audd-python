@@ -1,6 +1,6 @@
 """Official Python SDK for the AudD music recognition API."""
 from audd._version import __version__
-from audd.client import AsyncAudD, AudD
+from audd.client import AsyncAudD, AudD, AudDEvent
 from audd.errors import (
     AudDAPIError,
     AudDAuthenticationError,
@@ -20,8 +20,24 @@ from audd.errors import (
     AudDSubscriptionError,
 )
 from audd.longpoll import AsyncLongpollConsumer, LongpollConsumer
+from audd.models import (
+    AppleMusicMetadata,
+    DeezerMetadata,
+    EnterpriseMatch,
+    LyricsResult,
+    MusicBrainzEntry,
+    NapsterMetadata,
+    RecognitionResult,
+    SpotifyMetadata,
+    Stream,
+    StreamCallbackMatch,
+    StreamCallbackNotification,
+    StreamCallbackSong,
+    StreamingProvider,
+)
 
 __all__ = [
+    "AppleMusicMetadata",
     "AsyncAudD",
     "AsyncLongpollConsumer",
     "AudD",
@@ -31,6 +47,7 @@ __all__ = [
     "AudDConnectionError",
     "AudDCustomCatalogAccessError",
     "AudDError",
+    "AudDEvent",
     "AudDInvalidAudioError",
     "AudDInvalidRequestError",
     "AudDNeedsUpdateError",
@@ -41,6 +58,18 @@ __all__ = [
     "AudDServerError",
     "AudDStreamLimitError",
     "AudDSubscriptionError",
+    "DeezerMetadata",
+    "EnterpriseMatch",
     "LongpollConsumer",
+    "LyricsResult",
+    "MusicBrainzEntry",
+    "NapsterMetadata",
+    "RecognitionResult",
+    "SpotifyMetadata",
+    "Stream",
+    "StreamCallbackMatch",
+    "StreamCallbackNotification",
+    "StreamCallbackSong",
+    "StreamingProvider",
     "__version__",
 ]

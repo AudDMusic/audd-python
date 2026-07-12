@@ -60,9 +60,13 @@ class CustomCatalog:
         reopen = prepare_source(source)
 
         def _do() -> Any:
-            data, files = reopen()
+            data, files, cleanup = reopen()
             data["audio_id"] = str(audio_id)
-            return self._http.post_form(UPLOAD_URL, data=data, files=files)
+            try:
+                return self._http.post_form(UPLOAD_URL, data=data, files=files)
+            finally:
+                if cleanup is not None:
+                    cleanup()
 
         try:
             resp = retry_sync(_do, self._retry_policy)
@@ -84,9 +88,13 @@ class AsyncCustomCatalog:
         reopen = prepare_source(source)
 
         async def _do() -> Any:
-            data, files = reopen()
+            data, files, cleanup = reopen()
             data["audio_id"] = str(audio_id)
-            return await self._http.post_form(UPLOAD_URL, data=data, files=files)
+            try:
+                return await self._http.post_form(UPLOAD_URL, data=data, files=files)
+            finally:
+                if cleanup is not None:
+                    cleanup()
 
         try:
             resp = await retry_async(_do, self._retry_policy)

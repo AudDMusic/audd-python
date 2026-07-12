@@ -5,9 +5,9 @@ import asyncio
 import enum
 import random
 import time
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Callable, TypeVar
+from typing import TypeVar
 
 import httpx
 

@@ -14,15 +14,19 @@ libraries may not auto-seek. The shape stays consistent across the family.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from io import IOBase
 from pathlib import Path
-from typing import Any, Callable, Optional, Union
+from typing import Any
 
 # Source: URL string, filesystem path (str or Path), file-like, or raw bytes.
-Source = Union[str, Path, IOBase, bytes, bytearray]
+Source = str | Path | IOBase | bytes | bytearray
 
-# Output: (data, files_or_None). `files` may be None for URL-source.
-PreparedRequest = tuple[dict[str, Any], Optional[dict[str, Any]]]
+# Output: (data, files_or_None, cleanup_or_None). `files` may be None for
+# URL-source. `cleanup` closes any file handle the SDK itself opened for this
+# attempt; it is None when there is nothing to close (URLs, bytes) or when the
+# handle belongs to the caller (file-like sources are never closed by the SDK).
+PreparedRequest = tuple[dict[str, Any], dict[str, Any] | None, Callable[[], None] | None]
 
 
 def _looks_like_url(s: str) -> bool:
@@ -30,7 +34,8 @@ def _looks_like_url(s: str) -> bool:
 
 
 def prepare_source(source: Any) -> Callable[[], PreparedRequest]:
-    """Return a re-opener: a 0-arg callable that yields fresh (data, files) on each call.
+    """Return a re-opener: a 0-arg callable that yields fresh (data, files, cleanup)
+    on each call.
 
     URLs go in `data["url"]`; paths/file-likes/bytes go in `files["file"]`.
 
@@ -39,12 +44,17 @@ def prepare_source(source: Any) -> Callable[[], PreparedRequest]:
     objects (IOBase), each call seeks back to the original position before
     returning, if the object is seekable; if not, retrying that source
     raises immediately on attempt 2 (we'd send zero bytes otherwise).
+
+    The third tuple element is a cleanup callable that closes the handle the
+    SDK opened for the attempt (path sources); callers invoke it once the
+    request attempt finishes. It is None when nothing needs closing —
+    caller-owned file-like objects are deliberately never closed by the SDK.
     """
     # URL source: cheap, no body re-creation needed.
     if isinstance(source, str) and _looks_like_url(source):
         url = source
         def _do_url() -> PreparedRequest:
-            return ({"url": url}, None)
+            return ({"url": url}, None, None)
         return _do_url
 
     # Filesystem path (str or Path): open a fresh handle each attempt.
@@ -58,14 +68,15 @@ def prepare_source(source: Any) -> Callable[[], PreparedRequest]:
             )
 
         def _do_path() -> PreparedRequest:
-            return ({}, {"file": (path.name, path.open("rb"), "application/octet-stream")})
+            handle = path.open("rb")
+            return ({}, {"file": (path.name, handle, "application/octet-stream")}, handle.close)
         return _do_path
 
     # Raw bytes: each attempt sends a copy.
     if isinstance(source, (bytes, bytearray)):
         buf = bytes(source)
         def _do_bytes() -> PreparedRequest:
-            return ({}, {"file": ("upload.bin", buf, "application/octet-stream")})
+            return ({}, {"file": ("upload.bin", buf, "application/octet-stream")}, None)
         return _do_bytes
 
     # File-like object: seek back to the original position on each attempt.
@@ -90,7 +101,8 @@ def prepare_source(source: Any) -> Callable[[], PreparedRequest]:
                         "(buffer the content yourself) or use a Path / URL."
                     )
                 fl.seek(start)
-            return ({}, {"file": (name, fl, "application/octet-stream")})
+            # No cleanup: the handle belongs to the caller.
+            return ({}, {"file": (name, fl, "application/octet-stream")}, None)
         return _do_filelike
 
     raise TypeError(

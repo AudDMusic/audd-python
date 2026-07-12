@@ -6,7 +6,14 @@ import sys
 from typing import Any, Literal, TextIO
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    ValidationError,
+    ValidatorFunctionWrapHandler,
+    field_validator,
+    model_validator,
+)
 
 # Streaming providers reachable via the lis.tn `?<provider>` redirect helper.
 _STREAMING_PROVIDERS: tuple[str, ...] = (
@@ -35,6 +42,46 @@ class _Forward(BaseModel):
     """Base for every model — accepts unknown fields and exposes them in model_extra."""
 
     model_config = ConfigDict(extra="allow", populate_by_name=True, str_strip_whitespace=False)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _tolerate_wrong_typed_fields(
+        cls, data: Any, handler: ValidatorFunctionWrapHandler,
+    ) -> Any:
+        """Parse API responses leniently: a wrong-typed field degrades to its
+        default (``None``) instead of failing the whole model.
+
+        The server occasionally ships fields whose type differs from the
+        documented shape (or changes shape across releases). Response parsing
+        must never raise for that — only ``status=error`` bodies, undecodable
+        JSON, transport failures, and caller-input errors may raise. Each field
+        that fails validation is dropped (falling back to the field default);
+        everything else on the model is kept. The original value of a dropped
+        field is still discoverable via ``raw_response`` where the SDK
+        provides it.
+        """
+        if not isinstance(data, dict):
+            # Not an object at all (e.g. a bare string where a metadata block
+            # belongs). Let the container decide — unions fall back to None,
+            # list coercers skip the element.
+            return handler(data)
+        cleaned = dict(data)
+        # Each pass drops at least one offending field, so the number of
+        # passes is bounded by the number of declared fields.
+        for _ in range(len(cls.model_fields) + 1):
+            try:
+                return handler(cleaned)
+            except ValidationError as exc:
+                bad_keys = {
+                    err["loc"][0]
+                    for err in exc.errors()
+                    if err["loc"] and err["loc"][0] in cleaned
+                }
+                if not bad_keys:
+                    raise
+                for key in bad_keys:
+                    del cleaned[key]
+        return handler(cleaned)
 
 
 def _offset_to_seconds(offset: str | None) -> float | None:

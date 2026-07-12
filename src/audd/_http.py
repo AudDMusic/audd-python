@@ -31,16 +31,21 @@ class HTTPClient:
         self,
         api_token: str,
         *,
-        timeouts: httpx.Timeout = DEFAULT_TIMEOUTS,
+        timeouts: httpx.Timeout | None = None,
         httpx_client: httpx.Client | None = None,
     ) -> None:
         self._token_lock = threading.Lock()
         self._api_token = api_token
         self._owned = httpx_client is None
         self._client = httpx_client or httpx.Client(
-            timeout=timeouts,
+            timeout=timeouts if timeouts is not None else DEFAULT_TIMEOUTS,
             headers={"User-Agent": user_agent()},
         )
+        # Endpoint-specific timeouts (e.g. the enterprise 1-hour read timeout)
+        # must also apply when the caller injects their own httpx client —
+        # send them per-request in that case, since the injected client's own
+        # defaults don't know about them.
+        self._per_request_timeout = timeouts if not self._owned else None
         if not self._owned and "User-Agent" not in self._client.headers:
             self._client.headers["User-Agent"] = user_agent()
 
@@ -65,8 +70,9 @@ class HTTPClient:
         full_data = dict(data)
         full_data["api_token"] = self._current_token()
         kwargs: dict[str, Any] = {}
-        if timeout is not None:
-            kwargs["timeout"] = timeout
+        effective_timeout = timeout if timeout is not None else self._per_request_timeout
+        if effective_timeout is not None:
+            kwargs["timeout"] = effective_timeout
         if files is not None:
             kwargs["files"] = files
         r = self._client.post(url, data=full_data, **kwargs)
@@ -78,12 +84,20 @@ class HTTPClient:
         params: dict[str, Any],
         *,
         timeout: httpx.Timeout | None = None,
+        send_token: bool = True,
     ) -> HTTPResponse:
+        """GET with the api_token in the query string.
+
+        Pass ``send_token=False`` for endpoints that don't accept a token
+        (the longpoll endpoint authorizes by category alone).
+        """
         full = dict(params)
-        full.setdefault("api_token", self._current_token())
+        if send_token:
+            full.setdefault("api_token", self._current_token())
         kwargs: dict[str, Any] = {}
-        if timeout is not None:
-            kwargs["timeout"] = timeout
+        effective_timeout = timeout if timeout is not None else self._per_request_timeout
+        if effective_timeout is not None:
+            kwargs["timeout"] = effective_timeout
         r = self._client.get(url, params=full, **kwargs)
         return self._wrap(r)
 
@@ -109,16 +123,19 @@ class AsyncHTTPClient:
         self,
         api_token: str,
         *,
-        timeouts: httpx.Timeout = DEFAULT_TIMEOUTS,
+        timeouts: httpx.Timeout | None = None,
         httpx_client: httpx.AsyncClient | None = None,
     ) -> None:
         self._token_lock = threading.Lock()
         self._api_token = api_token
         self._owned = httpx_client is None
         self._client = httpx_client or httpx.AsyncClient(
-            timeout=timeouts,
+            timeout=timeouts if timeouts is not None else DEFAULT_TIMEOUTS,
             headers={"User-Agent": user_agent()},
         )
+        # See HTTPClient: endpoint-specific timeouts ride along per-request
+        # when the httpx client is injected rather than owned.
+        self._per_request_timeout = timeouts if not self._owned else None
         if not self._owned and "User-Agent" not in self._client.headers:
             self._client.headers["User-Agent"] = user_agent()
 
@@ -142,8 +159,9 @@ class AsyncHTTPClient:
         full_data = dict(data)
         full_data["api_token"] = self._current_token()
         kwargs: dict[str, Any] = {}
-        if timeout is not None:
-            kwargs["timeout"] = timeout
+        effective_timeout = timeout if timeout is not None else self._per_request_timeout
+        if effective_timeout is not None:
+            kwargs["timeout"] = effective_timeout
         if files is not None:
             kwargs["files"] = files
         r = await self._client.post(url, data=full_data, **kwargs)
@@ -155,12 +173,20 @@ class AsyncHTTPClient:
         params: dict[str, Any],
         *,
         timeout: httpx.Timeout | None = None,
+        send_token: bool = True,
     ) -> HTTPResponse:
+        """GET with the api_token in the query string.
+
+        Pass ``send_token=False`` for endpoints that don't accept a token
+        (the longpoll endpoint authorizes by category alone).
+        """
         full = dict(params)
-        full.setdefault("api_token", self._current_token())
+        if send_token:
+            full.setdefault("api_token", self._current_token())
         kwargs: dict[str, Any] = {}
-        if timeout is not None:
-            kwargs["timeout"] = timeout
+        effective_timeout = timeout if timeout is not None else self._per_request_timeout
+        if effective_timeout is not None:
+            kwargs["timeout"] = effective_timeout
         r = await self._client.get(url, params=full, **kwargs)
         return _wrap_async(r)
 

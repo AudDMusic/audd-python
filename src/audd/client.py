@@ -137,7 +137,11 @@ def _is_deprecation_pass_through(body: dict[str, Any]) -> bool:
 
     The server marks a parameter as deprecated but still fulfilled the request.
     """
-    err = body.get("error") or {}
+    err = body.get("error")
+    if not isinstance(err, dict):
+        # ``error`` may arrive as a bare string or other shape; that's never
+        # the code-51 pass-through.
+        return False
     return err.get("error_code") == _DEPRECATED_PARAMS_CODE and body.get("result") is not None
 
 
@@ -145,7 +149,10 @@ def _maybe_warn_and_strip(body: dict[str, Any]) -> None:
     """If body carries a code-51 deprecation warning + a usable result, emit the
     warning and rewrite the body to look like a normal success response."""
     if _is_deprecation_pass_through(body):
-        msg = (body.get("error") or {}).get("error_message", "Deprecated parameter used")
+        err = body.get("error")
+        msg: Any = "Deprecated parameter used"
+        if isinstance(err, dict):
+            msg = err.get("error_message", msg)
         warnings.warn(str(msg), DeprecationWarning, stacklevel=4)
         body.pop("error", None)
         body["status"] = "success"
@@ -383,19 +390,23 @@ class AudD(_BaseClient):
         started = monotonic()
 
         def _do() -> Any:
-            data, files = reopen()
+            data, files, cleanup = reopen()
             if extra_parameters:
                 data.update(extra_parameters)
             if ret is not None:
                 data["return"] = ret
             if market is not None:
                 data["market"] = market
-            return self._http.post_form(
-                url,
-                data=data,
-                files=files,
-                timeout=httpx.Timeout(timeout) if timeout else None,
-            )
+            try:
+                return self._http.post_form(
+                    url,
+                    data=data,
+                    files=files,
+                    timeout=httpx.Timeout(timeout) if timeout else None,
+                )
+            finally:
+                if cleanup is not None:
+                    cleanup()
 
         try:
             resp = retry_sync(_do, self._recognition_policy())
@@ -438,34 +449,38 @@ class AudD(_BaseClient):
         )
         url = f"{ENTERPRISE_BASE}/"
         hook = self._on_event
-        _safe_emit(hook, AudDEvent(kind="request", method="recognize", url=url))
+        _safe_emit(hook, AudDEvent(kind="request", method="recognizeEnterprise", url=url))
         started = monotonic()
 
         def _do() -> Any:
-            data, files = reopen()
+            data, files, cleanup = reopen()
             if extra_parameters:
                 data.update(extra_parameters)
             data.update(extra)
-            return self._enterprise_http.post_form(
-                url,
-                data=data,
-                files=files,
-                timeout=httpx.Timeout(timeout) if timeout else None,
-            )
+            try:
+                return self._enterprise_http.post_form(
+                    url,
+                    data=data,
+                    files=files,
+                    timeout=httpx.Timeout(timeout) if timeout else None,
+                )
+            finally:
+                if cleanup is not None:
+                    cleanup()
 
         try:
             resp = retry_sync(_do, self._recognition_policy())
         except httpx.RequestError as exc:
             elapsed = (monotonic() - started) * 1000.0
             _safe_emit(hook, AudDEvent(
-                kind="exception", method="recognize", url=url, elapsed_ms=elapsed,
+                kind="exception", method="recognizeEnterprise", url=url, elapsed_ms=elapsed,
                 extras={"error_type": type(exc).__name__},
             ))
             raise AudDConnectionError(str(exc), original=exc) from exc
 
         elapsed = (monotonic() - started) * 1000.0
         _safe_emit(hook, AudDEvent(
-            kind="response", method="recognize", url=url,
+            kind="response", method="recognizeEnterprise", url=url,
             request_id=resp.request_id, http_status=resp.http_status, elapsed_ms=elapsed,
         ))
         return _decode_enterprise(resp)
@@ -575,19 +590,23 @@ class AsyncAudD(_BaseClient):
         started = monotonic()
 
         async def _do() -> Any:
-            data, files = reopen()
+            data, files, cleanup = reopen()
             if extra_parameters:
                 data.update(extra_parameters)
             if ret is not None:
                 data["return"] = ret
             if market is not None:
                 data["market"] = market
-            return await self._http.post_form(
-                url,
-                data=data,
-                files=files,
-                timeout=httpx.Timeout(timeout) if timeout else None,
-            )
+            try:
+                return await self._http.post_form(
+                    url,
+                    data=data,
+                    files=files,
+                    timeout=httpx.Timeout(timeout) if timeout else None,
+                )
+            finally:
+                if cleanup is not None:
+                    cleanup()
 
         try:
             resp = await retry_async(_do, self._recognition_policy())
@@ -630,34 +649,38 @@ class AsyncAudD(_BaseClient):
         )
         url = f"{ENTERPRISE_BASE}/"
         hook = self._on_event
-        _safe_emit(hook, AudDEvent(kind="request", method="recognize", url=url))
+        _safe_emit(hook, AudDEvent(kind="request", method="recognizeEnterprise", url=url))
         started = monotonic()
 
         async def _do() -> Any:
-            data, files = reopen()
+            data, files, cleanup = reopen()
             if extra_parameters:
                 data.update(extra_parameters)
             data.update(extra)
-            return await self._enterprise_http.post_form(
-                url,
-                data=data,
-                files=files,
-                timeout=httpx.Timeout(timeout) if timeout else None,
-            )
+            try:
+                return await self._enterprise_http.post_form(
+                    url,
+                    data=data,
+                    files=files,
+                    timeout=httpx.Timeout(timeout) if timeout else None,
+                )
+            finally:
+                if cleanup is not None:
+                    cleanup()
 
         try:
             resp = await retry_async(_do, self._recognition_policy())
         except httpx.RequestError as exc:
             elapsed = (monotonic() - started) * 1000.0
             _safe_emit(hook, AudDEvent(
-                kind="exception", method="recognize", url=url, elapsed_ms=elapsed,
+                kind="exception", method="recognizeEnterprise", url=url, elapsed_ms=elapsed,
                 extras={"error_type": type(exc).__name__},
             ))
             raise AudDConnectionError(str(exc), original=exc) from exc
 
         elapsed = (monotonic() - started) * 1000.0
         _safe_emit(hook, AudDEvent(
-            kind="response", method="recognize", url=url,
+            kind="response", method="recognizeEnterprise", url=url,
             request_id=resp.request_id, http_status=resp.http_status, elapsed_ms=elapsed,
         ))
         return _decode_enterprise(resp)

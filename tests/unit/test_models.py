@@ -288,3 +288,12 @@ def test_enterprise_match_repr_and_pretty_print() -> None:
     buf = io.StringIO()
     m.pretty_print(stream=buf)
     assert '"score": 92' in buf.getvalue()
+
+
+def test_offset_to_seconds_handles_over_one_hour() -> None:
+    from audd.models import _offset_to_seconds
+
+    assert _offset_to_seconds("01:02:03") == 3723.0
+    assert _offset_to_seconds("00:30") == 30.0
+    assert _offset_to_seconds("45") == 45.0
+    assert _offset_to_seconds("bogus") is None
