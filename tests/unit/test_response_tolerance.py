@@ -1,4 +1,5 @@
-"""Lenient response parsing: wrong-typed fields degrade to None, never raise.
+"""Lenient response parsing: wrong-typed scalar fields are coerced when
+convertible and degrade to None when they aren't — parsing never raises.
 
 Covers recognize, enterprise, streams, and callbacks, plus the error-envelope
 guards (string ``error`` blocks, non-numeric ``error_code``).
@@ -15,7 +16,7 @@ from audd.errors import (
     AudDServerError,
     raise_from_error_response,
 )
-from audd.models import RecognitionResult
+from audd.models import EnterpriseMatch, RecognitionResult, Stream
 
 # ============================================================================
 # recognize — wrong-typed fields degrade per-field, the match survives.
@@ -36,7 +37,7 @@ _WRONG_TYPED_RESULT = {
 
 def _assert_degraded(result: RecognitionResult | None) -> None:
     assert result is not None
-    assert result.artist is None  # was 123
+    assert result.artist == "123"  # number for a str field: coerced, not dropped
     assert result.title == "Song"  # well-typed fields survive
     assert result.album is None  # was a list
     assert result.audio_id is None  # was "abc"
@@ -81,6 +82,94 @@ def test_numeric_string_coercions_still_work() -> None:
     r = RecognitionResult.model_validate({"audio_id": "42", "artist": "A"})
     assert r.audio_id == 42
     assert r.is_custom_match
+
+
+# ============================================================================
+# scalar coercion — wrong-typed scalars are converted when convertible,
+# and degrade to None only when they aren't.
+# ============================================================================
+
+
+def test_convertible_scalars_coerce() -> None:
+    m = EnterpriseMatch.model_validate({
+        "score": "85",            # numeric string → int
+        "start_offset": 1500.9,   # float → truncated int
+        "end_offset": "1e3",      # scientific-notation string → int
+        "artist": 123,            # number → str
+        "title": 8.5,             # float → str
+        "timecode": 123,          # number → str (timecode is str-typed)
+        "start_seconds": " 3.5 ",  # numeric string (trimmed) → float
+        "end_seconds": 7,         # int → float
+    })
+    assert m.score == 85
+    assert m.start_offset == 1500
+    assert m.end_offset == 1000
+    assert m.artist == "123"
+    assert m.title == "8.5"
+    assert m.timecode == "123"
+    assert m.start_seconds == 3.5
+    assert m.end_seconds == 7.0
+
+
+def test_non_convertible_scalars_degrade_to_none() -> None:
+    m = EnterpriseMatch.model_validate({
+        "score": "abc",           # non-numeric string
+        "start_offset": "85abc",  # partial-numeric strings don't parse
+        "end_offset": "0x1A",     # hex is not a plain/scientific decimal
+        "start_seconds": "NaN",
+        "end_seconds": "Infinity",
+        "artist": ["unexpected"],
+        "label": {"k": "v"},
+    })
+    assert m.score is None
+    assert m.start_offset is None
+    assert m.end_offset is None
+    assert m.start_seconds is None
+    assert m.end_seconds is None
+    assert m.artist is None
+    assert m.label is None
+
+
+def test_bool_coercion_for_numeric_fields() -> None:
+    m = EnterpriseMatch.model_validate({"score": True, "start_offset": False})
+    assert m.score == 1
+    assert m.start_offset == 0
+
+
+def test_bool_for_float_field_degrades_to_none() -> None:
+    m = EnterpriseMatch.model_validate({"start_seconds": True})
+    assert m.start_seconds is None
+
+
+@pytest.mark.parametrize("raw", ["true", "1", "yes", "on", " TRUE ", "Yes", "ON"])
+def test_bool_string_whitelist_true(raw: str) -> None:
+    s = Stream.model_validate({"stream_running": raw})
+    assert s.stream_running is True
+
+
+@pytest.mark.parametrize("raw", ["false", "0", "no", "off", "", " FALSE ", "No", "OFF"])
+def test_bool_string_whitelist_false(raw: str) -> None:
+    s = Stream.model_validate({"stream_running": raw})
+    assert s.stream_running is False
+
+
+@pytest.mark.parametrize("raw", ["maybe", "enabled", "2ish", "null", "t", "y"])
+def test_bool_unrecognized_string_degrades_to_none(raw: str) -> None:
+    s = Stream.model_validate({"stream_running": raw})
+    assert s.stream_running is None
+
+
+def test_bool_from_numbers() -> None:
+    assert Stream.model_validate({"stream_running": 5}).stream_running is True
+    assert Stream.model_validate({"stream_running": -1}).stream_running is True
+    assert Stream.model_validate({"stream_running": 0}).stream_running is False
+    assert Stream.model_validate({"stream_running": 0.0}).stream_running is False
+
+
+def test_overflowing_numeric_strings_never_produce_garbage() -> None:
+    m = EnterpriseMatch.model_validate({"score": "1e999", "start_seconds": "1e999"})
+    assert m.score is None  # not a garbage 0 / huge saturated int
+    assert m.start_seconds is None  # not inf
 
 
 # ============================================================================
@@ -139,9 +228,9 @@ def test_streams_list_tolerates_wrong_typed_fields() -> None:
     streams = AudD(api_token="t").streams.list()
     assert len(streams) == 1
     s = streams[0]
-    assert s.radio_id is None
-    assert s.url is None
-    assert s.stream_running is None
+    assert s.radio_id is None  # object where an int belongs: not convertible
+    assert s.url == "5"  # number for a str field: coerced
+    assert s.stream_running is None  # "maybe" is outside the bool whitelist
     assert s.longpoll_category == "abc123def"
 
 
@@ -182,7 +271,7 @@ def test_parse_callback_notification_tolerates_wrong_typed_fields() -> None:
     assert match is None
     assert notif is not None
     assert notif.radio_id is None
-    assert notif.stream_running is None
+    assert notif.stream_running is True  # number for a bool field: != 0
     assert notif.notification_code is None
     assert notif.notification_message == "stream stopped"
     assert notif.time == 1700000000

@@ -2,8 +2,10 @@
 round-trip through `model_extra` and attribute access."""
 from __future__ import annotations
 
+import math
 import sys
-from typing import Any, Literal, TextIO
+import types
+from typing import Any, Literal, TextIO, Union, get_args, get_origin
 from urllib.parse import urlparse
 
 from pydantic import (
@@ -38,27 +40,139 @@ def _lis_tn_streaming_url(song_link: str | None, provider: str) -> str | None:
     return f"{song_link}{sep}{provider}"
 
 
+# Strings a wrong-typed bool field accepts, both ways (case-insensitive,
+# trimmed). Anything outside the whitelist degrades to None — never a guess.
+_BOOL_TRUE_STRINGS = frozenset({"true", "1", "yes", "on"})
+_BOOL_FALSE_STRINGS = frozenset({"false", "0", "no", "off", ""})
+
+
+def _parse_numeric_string(text: str) -> float | None:
+    """Strict full-string numeric parse after trimming.
+
+    Accepts plain and scientific decimals ("85", " 8.5 ", "1e5"). Rejects
+    partial matches ("85abc"), hex ("0x1A"), underscores, and anything
+    non-finite ("NaN", "Infinity", overflowing exponents) — returns None.
+    """
+    s = text.strip()
+    if not s or "_" in s:
+        return None
+    try:
+        value = float(s)
+    except ValueError:
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _coerce_str(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (bool, int, float)):
+        return str(value)
+    return None
+
+
+def _coerce_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if math.isfinite(value) else None
+    if isinstance(value, str):
+        num = _parse_numeric_string(value)
+        return int(num) if num is not None else None
+    return None
+
+
+def _coerce_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        value = float(value)
+        return value if math.isfinite(value) else None
+    if isinstance(value, str):
+        return _parse_numeric_string(value)
+    return None
+
+
+def _coerce_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in _BOOL_TRUE_STRINGS:
+            return True
+        if s in _BOOL_FALSE_STRINGS:
+            return False
+    return None
+
+
+_SCALAR_COERCERS: dict[type, Any] = {
+    str: _coerce_str,
+    int: _coerce_int,
+    float: _coerce_float,
+    bool: _coerce_bool,
+}
+
+
+def _coerce_to_annotation(value: Any, annotation: Any) -> Any:
+    """Coerce a wrong-typed value toward a field's scalar annotation, or None.
+
+    Unions (``int | None``, ``int | str | None``) try each scalar member in
+    declaration order; the first successful coercion wins. Non-scalar targets
+    (models, lists, dicts) are never coerced — a wrong-shaped container
+    degrades to None.
+    """
+    origin = get_origin(annotation)
+    if origin is Union or origin is types.UnionType:
+        candidates = get_args(annotation)
+    else:
+        candidates = (annotation,)
+    for target in candidates:
+        coercer = _SCALAR_COERCERS.get(target)
+        if coercer is None:
+            continue
+        coerced = coercer(value)
+        if coerced is not None:
+            return coerced
+    return None
+
+
 class _Forward(BaseModel):
     """Base for every model — accepts unknown fields and exposes them in model_extra."""
 
-    model_config = ConfigDict(extra="allow", populate_by_name=True, str_strip_whitespace=False)
+    # strict + no inf/nan: well-typed responses validate directly; every
+    # wrong-typed scalar funnels into the wrap validator below, where the
+    # family coercion policy (not pydantic's lax rules) decides the outcome.
+    model_config = ConfigDict(
+        extra="allow",
+        populate_by_name=True,
+        str_strip_whitespace=False,
+        strict=True,
+        allow_inf_nan=False,
+    )
 
     @model_validator(mode="wrap")
     @classmethod
     def _tolerate_wrong_typed_fields(
         cls, data: Any, handler: ValidatorFunctionWrapHandler,
     ) -> Any:
-        """Parse API responses leniently: a wrong-typed field degrades to its
-        default (``None``) instead of failing the whole model.
+        """Parse API responses leniently: a wrong-typed scalar field is
+        coerced when convertible and degrades to its default (``None``)
+        when it isn't. The whole model never fails over one field.
 
         The server occasionally ships fields whose type differs from the
         documented shape (or changes shape across releases). Response parsing
         must never raise for that — only ``status=error`` bodies, undecodable
-        JSON, transport failures, and caller-input errors may raise. Each field
-        that fails validation is dropped (falling back to the field default);
-        everything else on the model is kept. The original value of a dropped
-        field is still discoverable via ``raw_response`` where the SDK
-        provides it.
+        JSON, transport failures, and caller-input errors may raise. Each
+        field that fails validation is coerced toward its declared scalar
+        type (``"85"`` → 85, ``123`` → ``"123"``, ``8.9`` → 8, numbers → bool
+        via ``!= 0``, whitelisted bool strings both ways); values that can't
+        be converted — and wrong-shaped containers — are dropped, falling
+        back to the field default. The original value of a dropped field is
+        still discoverable via ``raw_response`` where the SDK provides it.
         """
         if not isinstance(data, dict):
             # Not an object at all (e.g. a bare string where a metadata block
@@ -66,9 +180,10 @@ class _Forward(BaseModel):
             # list coercers skip the element.
             return handler(data)
         cleaned = dict(data)
-        # Each pass drops at least one offending field, so the number of
-        # passes is bounded by the number of declared fields.
-        for _ in range(len(cls.model_fields) + 1):
+        coerced_keys: set[str] = set()
+        # Each pass either coerces a field (at most once per key) or drops
+        # it, so passes are bounded by twice the number of declared fields.
+        for _ in range(2 * len(cls.model_fields) + 1):
             try:
                 return handler(cleaned)
             except ValidationError as exc:
@@ -80,7 +195,16 @@ class _Forward(BaseModel):
                 if not bad_keys:
                     raise
                 for key in bad_keys:
-                    del cleaned[key]
+                    coerced = None
+                    if isinstance(key, str) and key not in coerced_keys:
+                        coerced_keys.add(key)
+                        field = cls.model_fields.get(key)
+                        if field is not None:
+                            coerced = _coerce_to_annotation(cleaned[key], field.annotation)
+                    if coerced is None:
+                        del cleaned[key]
+                    else:
+                        cleaned[key] = coerced
         return handler(cleaned)
 
 
