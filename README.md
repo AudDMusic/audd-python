@@ -214,11 +214,12 @@ audd = AudD(
 
 | Class | Endpoints | Retried on |
 |---|---|---|
-| `RECOGNITION` | `recognize`, `recognize_enterprise`, `advanced.*` | network errors and 5xx **before** the upload reaches the server |
-| `READ` | `streams.list`, `streams.get_callback_url`, longpoll | network errors and 5xx |
-| `MUTATING` | `streams.set_callback_url`, `streams.add`, `streams.delete`, `custom_catalog.add` | network errors and 5xx (idempotent on the server) |
+| `RECOGNITION` | `recognize`, `recognize_enterprise`, `advanced.*` | connection errors **before** the upload completes, and 5xx responses |
+| `READ` | `streams.list`, `streams.get_callback_url`, longpoll | any network error, plus 408, 429, and 5xx |
+| `MUTATING` | `streams.set_callback_url`, `streams.add`, `streams.delete` | connection errors **before** the upload completes — never 5xx (the change may already have been applied) |
+| — | `custom_catalog.add` | never retried — the upload is metered, and re-sending it could double-bill |
 
-`RECOGNITION` will not double-bill your account: once the server has accepted bytes, a 5xx after that is surfaced rather than retried.
+`RECOGNITION` will not double-bill your account: once the upload has finished, a timeout or dropped connection while waiting for the result is surfaced rather than retried, because the server may already be processing the audio.
 
 **Custom HTTP client.** Inject your own `httpx.Client` (sync) or `httpx.AsyncClient` (async) to add proxies, mTLS, custom transports, or shared connection pools. The SDK adds its `User-Agent` if you don't set one.
 
