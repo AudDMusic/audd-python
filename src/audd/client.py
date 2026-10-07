@@ -374,7 +374,8 @@ class AudD(_BaseClient):
         timeout: float | None = None,
         extra_parameters: dict[str, str] | None = None,
     ) -> RecognitionResult | None:
-        """Recognize a short clip. Wrap in ``asyncio.wait_for`` (on AsyncAudD)
+        """Recognize a song from an audio clip; only the first 12 seconds are
+        analyzed. Wrap in ``asyncio.wait_for`` (on AsyncAudD)
         or use ``timeout=`` here for cancellation; note that **server-side
         metering still consumes credit even if the local call is cancelled**.
 
@@ -575,7 +576,8 @@ class AsyncAudD(_BaseClient):
         timeout: float | None = None,
         extra_parameters: dict[str, str] | None = None,
     ) -> RecognitionResult | None:
-        """Recognize a short clip. Wrap in ``asyncio.wait_for(...)`` for true
+        """Recognize a song from an audio clip; only the first 12 seconds are
+        analyzed. Wrap in ``asyncio.wait_for(...)`` for true
         cancellation (or call ``Task.cancel()``). **Server-side metering still
         consumes credit even if the local call is cancelled.**
 

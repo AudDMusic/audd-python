@@ -56,8 +56,8 @@ class AudDCustomCatalogAccessError(AudDSubscriptionError):
             "enabled on your account.\n\n"
             "Note: the custom-catalog endpoint is for adding songs to your private "
             "fingerprint database, not for music recognition. If you intended to "
-            "identify music, use recognize(...) (or recognize_enterprise(...) for "
-            "files longer than 25 seconds) instead.\n\n"
+            "identify music, use recognize(...) (or recognize_enterprise(...) to "
+            "scan beyond the first 12 seconds of a file) instead.\n\n"
             "To request custom-catalog access, contact api@audd.io.\n\n"
             f"[Server message: {server_message}]"
         )
