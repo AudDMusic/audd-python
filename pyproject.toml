@@ -81,6 +81,7 @@ target-version = "py310"
 select = ["E", "F", "W", "I", "B", "UP", "N", "PL", "RUF"]
 ignore = [
   "PLR0913",  # too many args — recognize_enterprise legitimately has many kwargs
+  "PLR0917",  # too many positional args — same, for the enterprise field builder
   "PLC0415",  # lazy imports inside namespace getters break circular imports
 ]
 
