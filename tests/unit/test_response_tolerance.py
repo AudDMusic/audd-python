@@ -84,6 +84,15 @@ def test_numeric_string_coercions_still_work() -> None:
     assert r.is_custom_match
 
 
+def test_enterprise_audio_id_coercions() -> None:
+    m = EnterpriseMatch.model_validate({"audio_id": "146", "score": 100})
+    assert m.audio_id == 146
+    assert m.is_custom_match
+    bad = EnterpriseMatch.model_validate({"audio_id": "abc", "artist": "A"})
+    assert bad.audio_id is None
+    assert bad.is_public_match
+
+
 # ============================================================================
 # scalar coercion — wrong-typed scalars are converted when convertible,
 # and degrade to None only when they aren't.

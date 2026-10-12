@@ -474,6 +474,9 @@ class RecognitionResult(_Forward):
 class EnterpriseMatch(_Forward):
     score: int | None = None
     timecode: str | None = None
+    audio_id: int | None = None
+    """Set only on matches from your custom catalog: the ``audio_id`` you
+    passed to ``custom_catalog.add``. ``None`` for public matches."""
     artist: str | None = None
     title: str | None = None
     album: str | None = None
@@ -498,6 +501,8 @@ class EnterpriseMatch(_Forward):
             parts.append(f"artist={self.artist!r}")
         if self.title:
             parts.append(f"title={self.title!r}")
+        if self.audio_id is not None:
+            parts.append(f"audio_id={self.audio_id!r}")
         parts.append(f"timecode={self.timecode!r}")
         parts.append(f"score={self.score!r}")
         if self.song_link:
@@ -512,6 +517,14 @@ class EnterpriseMatch(_Forward):
         out = stream if stream is not None else sys.stdout
         out.write(self.model_dump_json(indent=2))
         out.write("\n")
+
+    @property
+    def is_custom_match(self) -> bool:
+        return self.audio_id is not None
+
+    @property
+    def is_public_match(self) -> bool:
+        return self.audio_id is None and (self.artist is not None or self.title is not None)
 
     @property
     def thumbnail_url(self) -> str | None:

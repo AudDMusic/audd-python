@@ -88,6 +88,20 @@ def test_enterprise_match_fields() -> None:
     })
     assert e.score == 100
     assert e.isrc == "ABC"
+    assert e.audio_id is None
+    assert e.is_public_match is True
+    assert e.is_custom_match is False
+
+
+def test_enterprise_custom_match_audio_id() -> None:
+    e = EnterpriseMatch.model_validate({
+        "score": 100, "timecode": "01:45", "audio_id": 146,
+        "start_offset": 0, "end_offset": 11960,
+    })
+    assert e.audio_id == 146
+    assert e.is_custom_match is True
+    assert e.is_public_match is False
+    assert "audio_id=146" in repr(e)
 
 
 def test_lyrics_result() -> None:
