@@ -13,5 +13,5 @@ We will acknowledge receipt within 2 business days and coordinate disclosure wit
 
 ## Hardening practices
 
-This SDK never logs `api_token`, request bodies, or response bodies. The `onEvent` inspection hook receives request / response / exception lifecycle events with method, URL, HTTP status, elapsed time, and request_id — but never the token or payload bytes.
+This SDK never logs `api_token`, request bodies, or response bodies. The `on_event` inspection hook receives request / response / exception lifecycle events with method, URL, HTTP status, elapsed time, and request_id — but never the token or payload bytes.
 

@@ -46,8 +46,8 @@ def test_custom_catalog_add_docstring_warns_first() -> None:
 
 @respx.mock
 def test_custom_catalog_add_does_not_retry_on_transient_5xx() -> None:
-    """Custom-catalog upload is metered: a transient 5xx must NOT trigger a
-    retry, otherwise a successful-but-slow upload would double-charge.
+    """custom_catalog.add is sent once: a transient 5xx must NOT trigger an
+    automatic retry; the caller checks the error before sending it again.
 
     We seed three 5xx responses: a default-MUTATING policy with max_attempts=3
     would still only do one attempt (5xx isn't retried), so to make the
@@ -68,7 +68,7 @@ def test_custom_catalog_add_does_not_retry_on_transient_5xx() -> None:
 @respx.mock
 def test_custom_catalog_add_does_not_retry_on_pre_upload_connect_error() -> None:
     """Even pre-upload connection errors (which MUTATING normally retries) are
-    NOT retried for custom_catalog.add — metered upload, clean error preferred."""
+    NOT retried for custom_catalog.add: the caller gets the error and decides."""
     from audd.errors import AudDConnectionError
 
     call_count = {"n": 0}

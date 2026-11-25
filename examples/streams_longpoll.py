@@ -27,12 +27,16 @@ def main() -> None:
     category = audd.streams.derive_longpoll_category(radio_id)
 
     with audd.streams.longpoll(category, timeout=30) as poll:
-        # Drain matches; notifications and errors are also available on the
-        # corresponding iterators. For concurrent consumption of all three,
-        # use AsyncAudD.streams.longpoll(...) with asyncio.gather.
+        # Drain matches; notifications are also available on their own
+        # iterator. For concurrent consumption of all three, use
+        # AsyncAudD.streams.longpoll(...) with asyncio.gather.
         for match in poll.matches:
             print(f"{match.song.artist} — {match.song.title}  "
                   f"score={match.song.score}  radio={match.radio_id}")
+        # matches ends only when the subscription stops; an error that
+        # ended it is waiting here.
+        for err in poll.errors:
+            raise err
 
 
 if __name__ == "__main__":

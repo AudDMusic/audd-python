@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import threading
 from collections.abc import AsyncIterator, Awaitable, Iterator
+from dataclasses import dataclass, field
 from queue import Empty, Queue
 from typing import Any
 
@@ -15,7 +17,7 @@ from audd._callbacks import (
     derive_longpoll_category,
     parse_callback,
 )
-from audd._http import AsyncHTTPClient, HTTPClient
+from audd._http import DEFAULT_TIMEOUTS, AsyncHTTPClient, HTTPClient
 from audd._retry import RetryPolicy, retry_async, retry_sync
 from audd.errors import (
     AudDAPIError,
@@ -29,11 +31,24 @@ from audd.models import (
     Stream,
     StreamCallbackMatch,
     StreamCallbackNotification,
+    _coerce_int,
     _coerce_model_list,
 )
 
 API_BASE = "https://api.audd.io"
 LONGPOLL_URL = f"{API_BASE}/longpoll/"
+
+_log = logging.getLogger("audd")
+
+# The server holds each longpoll request open for 1-120 seconds.
+_LONGPOLL_TIMEOUT_MIN = 1
+_LONGPOLL_TIMEOUT_MAX = 120
+# Seconds the HTTP read waits beyond the poll's own ``timeout``.
+_LONGPOLL_READ_MARGIN = 10.0
+# Pause before the next request when a response brought no event and no new
+# timestamp: starts at 1 s and doubles up to 30 s.
+_IDLE_BACKOFF_INITIAL = 1.0
+_IDLE_BACKOFF_MAX = 30.0
 
 # Server returns error #19 from getCallbackUrl when no callback URL is configured.
 # Catch-all "Internal error" code; we treat it specifically here as the
@@ -187,7 +202,8 @@ class _SyncLongpollPoll:
     """Sync long-poll subscription handle.
 
     Three iterators surface output: ``matches``, ``notifications``, ``errors``.
-    ``errors`` is single-shot — the first error terminates the subscription.
+    ``errors`` is single-shot — the first error terminates the subscription,
+    and ``matches`` / ``notifications`` then end once drained.
 
     Supports the context-manager protocol; ``close()`` is idempotent.
     """
@@ -239,14 +255,21 @@ class _SyncLongpollPoll:
             yield item
 
     def close(self) -> None:
-        """Stop the background poller. Idempotent."""
+        """Stop the background poller and end the iterators. Idempotent.
+
+        No request is sent after ``close()``, and the response to a request
+        still waiting on the server is discarded.
+        """
         if self._closed.is_set():
             return
         self._closed.set()
         self._stop.set()
-        # Don't join — the HTTP read may be blocked in httpx for up to ``timeout``
-        # seconds. Daemon thread cleans up at process exit. Best-effort short
-        # join to give in-flight responses a chance to flush.
+        # The iterators end at this point (after draining what's queued); the poller
+        # thread checks ``_stop`` before delivering a response.
+        self._terminated.set()
+        # httpx's sync API can't abort a blocked read from another thread, so
+        # don't wait out a request the server is still holding: the daemon
+        # thread exits as soon as it returns. Short join for the common case.
         self._thread.join(timeout=0.5)
 
     def __enter__(self) -> _SyncLongpollPoll:
@@ -265,49 +288,179 @@ def _build_longpoll_params(
     return params
 
 
-def _classify_response(resp: Any) -> tuple[
-    StreamCallbackMatch | None,
-    StreamCallbackNotification | None,
-    Exception | None,
-    int | None,
-]:
-    """Translate a longpoll HTTP response into one of:
+def _validate_longpoll_timeout(timeout: Any) -> int:
+    """Check the caller's ``timeout`` against the server's accepted range."""
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, int)
+        or not _LONGPOLL_TIMEOUT_MIN <= timeout <= _LONGPOLL_TIMEOUT_MAX
+    ):
+        raise ValueError(
+            "longpoll timeout must be a whole number of seconds from "
+            f"{_LONGPOLL_TIMEOUT_MIN} to {_LONGPOLL_TIMEOUT_MAX}, got {timeout!r}",
+        )
+    return timeout
 
-    * ``(match, None, None, since)`` — match dispatched
-    * ``(None, notif, None, since)`` — notification dispatched
-    * ``(None, None, None, since)`` — pure-timeout payload, just advance since_time
-    * ``(None, None, exc, None)`` — terminal error
 
-    The returned ``since`` is the new ``since_time`` to use on the next poll
-    (None if the body had no usable timestamp).
+def _longpoll_request_timeout(
+    timeout: int, base: httpx.Timeout = DEFAULT_TIMEOUTS,
+) -> httpx.Timeout:
+    """httpx timeout for one longpoll GET: the read outlasts the server's hold."""
+    return httpx.Timeout(
+        connect=base.connect,
+        read=timeout + _LONGPOLL_READ_MARGIN,
+        write=base.write,
+        pool=base.pool,
+    )
+
+
+_LongpollItem = StreamCallbackMatch | StreamCallbackNotification
+
+
+@dataclass
+class _LongpollOutcome:
+    """What one longpoll response yields.
+
+    ``items``: parsed matches and notifications, in server order.
+    ``since``: the ``since_time`` for the next request (None: keep the current one).
+    ``error``: set when the subscription has to end.
     """
+
+    items: list[_LongpollItem] = field(default_factory=list)
+    since: int | None = None
+    error: Exception | None = None
+
+
+def _timestamp_ms(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    return _coerce_int(value)
+
+
+def _parse_callback_body(data: Any) -> _LongpollItem | None:
+    """Parse a callback body (object or JSON text). None when it can't be parsed."""
+    if isinstance(data, bytearray):
+        data = bytes(data)
+    if not isinstance(data, (dict, str, bytes)):
+        return None
+    try:
+        match, notif = parse_callback(data)
+    except AudDSerializationError:
+        return None
+    return match if match is not None else notif
+
+
+def _classify_events(events: list[Any], since: int | None) -> _LongpollOutcome:
+    """``{"events": [{"timestamp", "category", "data"}, ...]}``: each ``data``
+    is a callback body. Events that can't be parsed are skipped."""
+    out = _LongpollOutcome()
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        ts = _timestamp_ms(event.get("timestamp"))
+        if ts is not None:
+            if since is not None and ts <= since:
+                # The server only returns events newer than since_time;
+                # anything older was delivered by an earlier response.
+                continue
+            out.since = ts if out.since is None else max(out.since, ts)
+        item = _parse_callback_body(event.get("data"))
+        if item is None:
+            _log.debug("audd longpoll: skipped an unparseable event (timestamp %s)", ts)
+            continue
+        out.items.append(item)
+    return out
+
+
+def _response_error(resp: Any) -> AudDAPIError | None:
+    """The error that ends the subscription, if this response carries one."""
+    body = resp.json_body
     if resp.http_status >= _HTTP_CLIENT_ERROR_FLOOR:
-        return None, None, AudDServerError(
+        message = f"Longpoll endpoint returned HTTP {resp.http_status}"
+        if isinstance(body, dict) and isinstance(body.get("error"), str):
+            message = f"{message}: {body['error']}"
+        return AudDServerError(
             error_code=0,
-            message=f"Longpoll endpoint returned HTTP {resp.http_status}",
+            message=message,
             http_status=resp.http_status,
             request_id=resp.request_id,
-            raw_response=resp.json_body if resp.json_body is not None else resp.raw_text,
-        ), None
+            raw_response=body if body is not None else resp.raw_text,
+        )
+    if not isinstance(body, dict):
+        return None
+    error = body.get("error")
+    if body.get("status") == "error" or isinstance(error, dict):
+        try:
+            raise_from_error_response(
+                body, http_status=resp.http_status, request_id=resp.request_id,
+            )
+        except AudDAPIError as exc:
+            return exc
+    if error is None:
+        return None
+    # ``{"error": "..."}`` with HTTP 200: the same request gets the same
+    # error again, so it ends the subscription.
+    return AudDInvalidRequestError(
+        error_code=0,
+        message=str(error),
+        http_status=resp.http_status,
+        request_id=resp.request_id,
+        raw_response=body,
+    )
+
+
+def _classify_response(resp: Any, since: int | None = None) -> _LongpollOutcome:
+    """Translate one longpoll HTTP response.
+
+    The server answers with an events body, a timeout body
+    (``{"timeout": ..., "timestamp": ms}``) or an error body
+    (``{"error": "..."}``, sent with HTTP 200). A body with ``result`` or
+    ``notification`` at the top level (plus an optional ``timestamp``) is
+    read as a single callback body. An empty, non-JSON or unknown body
+    yields nothing, and the loop backs off before the next request.
+    """
+    error = _response_error(resp)
+    if error is not None:
+        return _LongpollOutcome(error=error)
 
     body = resp.json_body
     if not isinstance(body, dict):
-        return None, None, AudDSerializationError(
-            "Longpoll response was not a JSON object",
-            raw_text=resp.raw_text,
-        ), None
+        return _LongpollOutcome()
 
-    ts = body.get("timestamp") if isinstance(body.get("timestamp"), int) else None
+    events = body.get("events")
+    if isinstance(events, list):
+        return _classify_events(events, since)
 
-    # Drop pure-timeout payloads silently — they only update since_time.
-    if "result" not in body and "notification" not in body:
-        return None, None, None, ts
+    out = _LongpollOutcome(since=_timestamp_ms(body.get("timestamp")))
+    if "result" in body or "notification" in body:
+        item = _parse_callback_body(body)
+        if item is not None:
+            out.items.append(item)
+        else:
+            _log.debug("audd longpoll: skipped a response body that could not be parsed")
+    return out
 
-    try:
-        match, notif = parse_callback(body)
-    except AudDSerializationError as exc:
-        return None, None, exc, None
-    return match, notif, None, ts
+
+class _IdleBackoff:
+    """Pause before the next request after a response that brought nothing new."""
+
+    def __init__(self) -> None:
+        self._next = _IDLE_BACKOFF_INITIAL
+
+    def delay_after(self, outcome: _LongpollOutcome, since: int | None) -> float:
+        """0 when the response delivered an item or a new timestamp; otherwise
+        the next pause, doubling from 1 s up to 30 s."""
+        if outcome.items or (outcome.since is not None and outcome.since != since):
+            self._next = _IDLE_BACKOFF_INITIAL
+            return 0.0
+        delay = self._next
+        self._next = min(delay * 2, _IDLE_BACKOFF_MAX)
+        _log.warning(
+            "audd longpoll: the response had no events and no new timestamp; "
+            "next request in %.0f s",
+            delay,
+        )
+        return delay
 
 
 def _run_longpoll_sync(
@@ -318,6 +471,7 @@ def _run_longpoll_sync(
     timeout: int,
 ) -> None:
     cur_since = since_time
+    idle = _IdleBackoff()
     try:
         while not poll._stop.is_set():
             params = _build_longpoll_params(category, timeout, cur_since)
@@ -331,17 +485,23 @@ def _run_longpoll_sync(
                 # Surface the error on the errors channel — broad catch is intentional.
                 poll._errors.put(exc)
                 return
+            if poll._stop.is_set():
+                return  # closed while the request was waiting
 
-            match, notif, err, new_since = _classify_response(resp)
-            if err is not None:
-                poll._errors.put(err)
+            outcome = _classify_response(resp, cur_since)
+            if outcome.error is not None:
+                poll._errors.put(outcome.error)
                 return
-            if match is not None:
-                poll._matches.put(match)
-            elif notif is not None:
-                poll._notifications.put(notif)
-            if new_since is not None:
-                cur_since = new_since
+            for item in outcome.items:
+                if isinstance(item, StreamCallbackMatch):
+                    poll._matches.put(item)
+                else:
+                    poll._notifications.put(item)
+            delay = idle.delay_after(outcome, cur_since)
+            if outcome.since is not None:
+                cur_since = outcome.since
+            if delay and poll._stop.wait(delay):
+                return
     finally:
         poll._terminated.set()
 
@@ -351,9 +511,10 @@ class _AsyncLongpollPoll:
 
     Three async iterators surface output: ``matches``, ``notifications``,
     ``errors``. ``errors`` is single-shot — the first error terminates the
-    subscription.
+    subscription, and ``matches`` / ``notifications`` then end once drained.
 
-    Supports the async context-manager protocol; ``aclose()`` is idempotent.
+    Supports the async context-manager protocol; ``aclose()`` is idempotent
+    and cancels a request that is still waiting on the server.
     """
 
     def __init__(self) -> None:
@@ -430,6 +591,7 @@ async def _run_longpoll_async(
     timeout: int,
 ) -> None:
     cur_since = since_time
+    idle = _IdleBackoff()
     try:
         while not poll._stop.is_set():
             params = _build_longpoll_params(category, timeout, cur_since)
@@ -445,21 +607,24 @@ async def _run_longpoll_async(
                 # Surface the error on the errors channel — broad catch is intentional.
                 await poll._errors.put(exc)
                 return
-
-            match, notif, err, new_since = _classify_response(resp)
-            if err is not None:
-                await poll._errors.put(err)
+            if poll._stop.is_set():
                 return
-            if match is not None:
-                await poll._matches.put(match)
-            elif notif is not None:
-                await poll._notifications.put(notif)
-            if new_since is not None:
-                cur_since = new_since
-            # Cooperative yield: puts on unbounded queues never suspend, so
-            # guarantee consumers get scheduled at least once per poll cycle
-            # even when fetch resolves without touching the event loop.
-            await asyncio.sleep(0)
+
+            outcome = _classify_response(resp, cur_since)
+            if outcome.error is not None:
+                await poll._errors.put(outcome.error)
+                return
+            for item in outcome.items:
+                if isinstance(item, StreamCallbackMatch):
+                    await poll._matches.put(item)
+                else:
+                    await poll._notifications.put(item)
+            delay = idle.delay_after(outcome, cur_since)
+            if outcome.since is not None:
+                cur_since = outcome.since
+            # Always yield at least once per cycle: puts on unbounded queues
+            # never suspend, and fetch may resolve without touching the loop.
+            await asyncio.sleep(delay)
     finally:
         poll._terminated.set()
 
@@ -619,17 +784,28 @@ class Streams(_StreamsBase):
 
         The handle exposes three iterators — ``poll.matches``,
         ``poll.notifications``, ``poll.errors`` — populated by a background
-        thread. ``errors`` is single-shot; the first error terminates the
-        subscription. Use the handle as a context manager for clean shutdown:
+        thread. Each request waits up to ``timeout`` seconds (1-120) for new
+        events; the next one asks only for events newer than the newest
+        timestamp seen so far. Network failures and HTTP 5xx are retried with
+        the client's ``max_retries`` / ``backoff_factor``.
+        ``errors`` is single-shot: the first error terminates the
+        subscription, and ``matches`` / ``notifications`` then end. Use the
+        handle as a context manager for clean shutdown:
 
         .. code-block:: python
 
             with audd.streams.longpoll(radio_id=42) as poll:
                 for m in poll.matches:
                     print(m.song.artist, m.song.title)
+                for err in poll.errors:
+                    raise err
 
         On entry: preflights ``getCallbackUrl`` unless ``skip_callback_check=True``.
+
+        Raises:
+            ValueError: ``timeout`` is outside 1-120.
         """
+        timeout = _validate_longpoll_timeout(timeout)
         category = self._resolve_longpoll_category(category, radio_id)
 
         if not skip_callback_check:
@@ -645,11 +821,15 @@ class Streams(_StreamsBase):
                     ) from None
                 raise
 
+        request_timeout = _longpoll_request_timeout(timeout)
+
         def fetch(params: dict[str, Any]) -> Any:
             def _do() -> Any:
                 # The longpoll endpoint authorizes by category alone and does
                 # not accept api_token — never send it here.
-                return self._http.get(LONGPOLL_URL, params=params, send_token=False)
+                return self._http.get(
+                    LONGPOLL_URL, params=params, timeout=request_timeout, send_token=False,
+                )
             return retry_sync(_do, self._read)
 
         return _SyncLongpollPoll(fetch, category, since_time, timeout)
@@ -762,17 +942,24 @@ class AsyncStreams(_StreamsBase):
         one is required.
 
         The handle exposes three async iterators — ``poll.matches``,
-        ``poll.notifications``, ``poll.errors``. Use it as an async context
-        manager for clean shutdown:
+        ``poll.notifications``, ``poll.errors`` — and polls the same way as
+        :meth:`Streams.longpoll`. Use it as an async context manager for clean
+        shutdown:
 
         .. code-block:: python
 
             async with await audd.streams.longpoll(radio_id=42) as poll:
                 async for m in poll.matches:
                     print(m.song.artist, m.song.title)
+                async for err in poll.errors:
+                    raise err
 
         On entry: preflights ``getCallbackUrl`` unless ``skip_callback_check=True``.
+
+        Raises:
+            ValueError: ``timeout`` is outside 1-120.
         """
+        timeout = _validate_longpoll_timeout(timeout)
         category = self._resolve_longpoll_category(category, radio_id)
 
         if not skip_callback_check:
@@ -788,11 +975,15 @@ class AsyncStreams(_StreamsBase):
                     ) from None
                 raise
 
+        request_timeout = _longpoll_request_timeout(timeout)
+
         async def fetch(params: dict[str, Any]) -> Any:
             async def _do() -> Any:
                 # The longpoll endpoint authorizes by category alone and does
                 # not accept api_token — never send it here.
-                return await self._http.get(LONGPOLL_URL, params=params, send_token=False)
+                return await self._http.get(
+                    LONGPOLL_URL, params=params, timeout=request_timeout, send_token=False,
+                )
             return await retry_async(_do, self._read)
 
         poll = _AsyncLongpollPoll()

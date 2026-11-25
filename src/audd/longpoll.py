@@ -5,8 +5,9 @@ user/server who derived the category is responsible for ensuring a callback
 URL is set on their account (we can't preflight that without a token).
 
 The consumer's ``iterate()`` returns the same poll-handle shape as
-:py:meth:`audd.streams.Streams.longpoll` — three iterators (matches,
-notifications, errors) and async/sync context-manager support.
+:py:meth:`audd.streams.Streams.longpoll`, and polls the same way: three
+iterators (matches, notifications, errors) and async/sync context-manager
+support.
 """
 from __future__ import annotations
 
@@ -18,9 +19,13 @@ from audd._user_agent import user_agent
 from audd.streams import (
     LONGPOLL_URL,
     _AsyncLongpollPoll,
+    _longpoll_request_timeout,
     _run_longpoll_async,
     _SyncLongpollPoll,
+    _validate_longpoll_timeout,
 )
+
+_CONSUMER_TIMEOUTS = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
 
 
 class LongpollConsumer:
@@ -32,6 +37,11 @@ class LongpollConsumer:
             with consumer.iterate() as poll:
                 for m in poll.matches:
                     print(m.song.artist, m.song.title)
+                for err in poll.errors:
+                    raise err
+
+    ``max_retries`` is the number of attempts per request, the first one
+    included; network failures and HTTP 408 / 429 / 5xx are retried.
     """
 
     def __init__(
@@ -45,7 +55,7 @@ class LongpollConsumer:
         self._category = category
         self._owned = httpx_client is None
         self._client = httpx_client or httpx.Client(
-            timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0),
+            timeout=_CONSUMER_TIMEOUTS,
             headers={"User-Agent": user_agent()},
         )
         if not self._owned and "User-Agent" not in self._client.headers:
@@ -59,10 +69,19 @@ class LongpollConsumer:
         timeout: int = 50,
     ) -> _SyncLongpollPoll:
         """Start a poll. Returns a handle with ``matches``, ``notifications``,
-        ``errors`` iterators. Use as a context manager for clean shutdown."""
+        ``errors`` iterators. Use as a context manager for clean shutdown.
+
+        Each request waits up to ``timeout`` seconds (1-120) for new events.
+
+        Raises:
+            ValueError: ``timeout`` is outside 1-120.
+        """
+        timeout = _validate_longpoll_timeout(timeout)
+        request_timeout = _longpoll_request_timeout(timeout, _CONSUMER_TIMEOUTS)
+
         def fetch(params: dict[str, str]) -> HTTPResponse:
             def _do() -> HTTPResponse:
-                r = self._client.get(LONGPOLL_URL, params=params)
+                r = self._client.get(LONGPOLL_URL, params=params, timeout=request_timeout)
                 try:
                     body = r.json()
                 except Exception:
@@ -95,6 +114,11 @@ class AsyncLongpollConsumer:
             async with consumer.iterate() as poll:
                 async for m in poll.matches:
                     print(m.song.artist, m.song.title)
+                async for err in poll.errors:
+                    raise err
+
+    ``max_retries`` is the number of attempts per request, the first one
+    included; network failures and HTTP 408 / 429 / 5xx are retried.
     """
 
     def __init__(
@@ -108,7 +132,7 @@ class AsyncLongpollConsumer:
         self._category = category
         self._owned = httpx_client is None
         self._client = httpx_client or httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0),
+            timeout=_CONSUMER_TIMEOUTS,
             headers={"User-Agent": user_agent()},
         )
         if not self._owned and "User-Agent" not in self._client.headers:
@@ -121,9 +145,17 @@ class AsyncLongpollConsumer:
         since_time: int | None = None,
         timeout: int = 50,
     ) -> _AsyncLongpollPoll:
+        """Start a poll. See :meth:`LongpollConsumer.iterate`.
+
+        Raises:
+            ValueError: ``timeout`` is outside 1-120.
+        """
+        timeout = _validate_longpoll_timeout(timeout)
+        request_timeout = _longpoll_request_timeout(timeout, _CONSUMER_TIMEOUTS)
+
         async def fetch(params: dict[str, str]) -> HTTPResponse:
             async def _do() -> HTTPResponse:
-                r = await self._client.get(LONGPOLL_URL, params=params)
+                r = await self._client.get(LONGPOLL_URL, params=params, timeout=request_timeout)
                 try:
                     body = r.json()
                 except Exception:

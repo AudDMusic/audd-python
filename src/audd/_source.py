@@ -7,17 +7,20 @@ each call. The client invokes it inside the retry-wrapped request closure.
 httpx specifically auto-seeks file handles between `post()` calls, so a
 naive once-open implementation would not actually break in our case. The
 re-opener is defensive: (a) it doesn't depend on any specific HTTP-library
-behavior, (b) it raises cleanly on unseekable streams when a retry is
-attempted (rather than silently sending an empty body), and (c) sibling
+behavior, (b) it refuses to resend an unseekable stream on a retry
+(rather than silently sending an empty body), and (c) sibling
 SDKs in other languages must follow this pattern because their HTTP
 libraries may not auto-seek. The shape stays consistent across the family.
 """
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from io import IOBase
 from pathlib import Path
 from typing import Any
+
+from audd._retry import SourceNotRetryableError
 
 # Source: URL string, filesystem path (str or Path), file-like, or raw bytes.
 Source = str | Path | IOBase | bytes | bytearray
@@ -33,6 +36,17 @@ def _looks_like_url(s: str) -> bool:
     return s.startswith("http://") or s.startswith("https://")
 
 
+def _upload_filename(fl: Any) -> str:
+    """Filename for a file-like's multipart part: the base name only, so local
+    directory names never leave the machine."""
+    name = getattr(fl, "name", None)
+    if isinstance(name, (str, bytes, os.PathLike)):
+        base = os.path.basename(os.fsdecode(name))
+        if base:
+            return base
+    return "upload.bin"
+
+
 def prepare_source(source: Any) -> Callable[[], PreparedRequest]:
     """Return a re-opener: a 0-arg callable that yields fresh (data, files, cleanup)
     on each call.
@@ -42,8 +56,8 @@ def prepare_source(source: Any) -> Callable[[], PreparedRequest]:
     For file paths and bytes, each call returns a fresh handle/buffer so that
     retried requests don't read from an exhausted source. For file-like
     objects (IOBase), each call seeks back to the original position before
-    returning, if the object is seekable; if not, retrying that source
-    raises immediately on attempt 2 (we'd send zero bytes otherwise).
+    returning, if the object is seekable; if not, attempt 2 isn't sent (it
+    would carry zero bytes) and the first attempt's failure is raised.
 
     The third tuple element is a cleanup callable that closes the handle the
     SDK opened for the attempt (path sources); callers invoke it once the
@@ -82,7 +96,7 @@ def prepare_source(source: Any) -> Callable[[], PreparedRequest]:
     # File-like object: seek back to the original position on each attempt.
     if hasattr(source, "read"):
         fl: Any = source
-        name = getattr(fl, "name", "upload.bin")
+        name = _upload_filename(fl)
         try:
             start = fl.tell()
             seekable = True
@@ -96,7 +110,7 @@ def prepare_source(source: Any) -> Callable[[], PreparedRequest]:
                 first_call[0] = False
             else:
                 if not seekable or start is None:
-                    raise RuntimeError(
+                    raise SourceNotRetryableError(
                         "Cannot retry an unseekable file-like source. Pass bytes "
                         "(buffer the content yourself) or use a Path / URL."
                     )

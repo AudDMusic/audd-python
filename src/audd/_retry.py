@@ -25,9 +25,9 @@ class RetryClass(enum.Enum):
     MUTATING    — streams.set_callback_url, streams.add, streams.delete, etc.:
                   retry only on pre-upload connection failures.
                   DO NOT retry 5xx (the side effect may have happened).
-                  custom_catalog.add uses MUTATING with max_attempts=1 (no
-                  retries at all): the upload is metered and a transparent retry
-                  on transport failure could double-charge.
+                  custom_catalog.add uses MUTATING with max_attempts=1: the
+                  upload is sent once and never retried automatically, so the
+                  caller sees the error and decides whether to send it again.
     """
 
     READ = "read"
@@ -38,9 +38,19 @@ class RetryClass(enum.Enum):
 @dataclass(frozen=True)
 class RetryPolicy:
     retry_class: RetryClass
-    max_attempts: int = 3
+    max_attempts: int = 3  # attempts per call, first one included; < 1 means 1
     backoff_factor: float = 0.5
     backoff_max: float = 30.0
+
+    @property
+    def attempts(self) -> int:
+        return max(1, self.max_attempts)
+
+
+class SourceNotRetryableError(RuntimeError):
+    """Raised by a request attempt whose upload source can't be sent again
+    (an unseekable file-like). The retry loop then surfaces the previous
+    attempt's failure instead."""
 
 
 T = TypeVar("T")
@@ -95,15 +105,21 @@ def _should_retry_exception(exc: BaseException, retry_class: RetryClass) -> bool
 def retry_sync(fn: Callable[[], HTTPResponse], policy: RetryPolicy) -> HTTPResponse:
     last_exc: BaseException | None = None
     last_resp: HTTPResponse | None = None
-    for attempt in range(policy.max_attempts):
+    for attempt in range(policy.attempts):
         try:
             resp = fn()
+        except SourceNotRetryableError:
+            if last_resp is not None:
+                return last_resp
+            if last_exc is not None:
+                raise last_exc from None
+            raise
         except BaseException as exc:
             last_exc = exc
             last_resp = None
             if not _should_retry_exception(exc, policy.retry_class):
                 raise
-            if attempt + 1 >= policy.max_attempts:
+            if attempt + 1 >= policy.attempts:
                 raise
             _sync_sleep(_backoff_delay(attempt, policy))
             continue
@@ -112,7 +128,7 @@ def retry_sync(fn: Callable[[], HTTPResponse], policy: RetryPolicy) -> HTTPRespo
             return resp
         last_resp = resp
         last_exc = None
-        if attempt + 1 >= policy.max_attempts:
+        if attempt + 1 >= policy.attempts:
             return resp
         _sync_sleep(_backoff_delay(attempt, policy))
     if last_resp is not None:
@@ -127,15 +143,21 @@ async def retry_async(
 ) -> HTTPResponse:
     last_exc: BaseException | None = None
     last_resp: HTTPResponse | None = None
-    for attempt in range(policy.max_attempts):
+    for attempt in range(policy.attempts):
         try:
             resp = await fn()
+        except SourceNotRetryableError:
+            if last_resp is not None:
+                return last_resp
+            if last_exc is not None:
+                raise last_exc from None
+            raise
         except BaseException as exc:
             last_exc = exc
             last_resp = None
             if not _should_retry_exception(exc, policy.retry_class):
                 raise
-            if attempt + 1 >= policy.max_attempts:
+            if attempt + 1 >= policy.attempts:
                 raise
             await _async_sleep(_backoff_delay(attempt, policy))
             continue
@@ -144,7 +166,7 @@ async def retry_async(
             return resp
         last_resp = resp
         last_exc = None
-        if attempt + 1 >= policy.max_attempts:
+        if attempt + 1 >= policy.attempts:
             return resp
         await _async_sleep(_backoff_delay(attempt, policy))
     if last_resp is not None:

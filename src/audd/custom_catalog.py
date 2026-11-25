@@ -41,8 +41,8 @@ def _decode_success(body: Any, http_status: int, request_id: str | None) -> None
 class CustomCatalog:
     def __init__(self, http: HTTPClient, retry_policy: RetryPolicy) -> None:
         self._http = http
-        # Metered upload: client.py passes a no-retry policy here so a transient
-        # transport failure can't double-charge the same audio fingerprinting.
+        # client.py passes a no-retry policy: add() is sent once, and the
+        # caller decides whether to send it again after an error.
         self._retry_policy = retry_policy
 
     def add(self, audio_id: int, source: Source) -> None:
@@ -56,6 +56,10 @@ class CustomCatalog:
         Calling this again with the same ``audio_id`` re-fingerprints that slot.
         There is no public list/delete endpoint; track ``audio_id`` ↔ song
         mappings on your side.
+
+        The upload is sent once and never retried automatically: check the
+        error before sending it again (an upload to an ``audio_id`` that
+        already holds a song replaces it).
         """
         reopen = prepare_source(source)
 
@@ -78,8 +82,8 @@ class CustomCatalog:
 class AsyncCustomCatalog:
     def __init__(self, http: AsyncHTTPClient, retry_policy: RetryPolicy) -> None:
         self._http = http
-        # Metered upload: client.py passes a no-retry policy here so a transient
-        # transport failure can't double-charge the same audio fingerprinting.
+        # client.py passes a no-retry policy: add() is sent once, and the
+        # caller decides whether to send it again after an error.
         self._retry_policy = retry_policy
 
     async def add(self, audio_id: int, source: Source) -> None:

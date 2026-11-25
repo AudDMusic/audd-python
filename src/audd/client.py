@@ -7,7 +7,7 @@ import warnings
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from time import monotonic
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
 
@@ -31,6 +31,11 @@ from audd.models import (
     RecognitionResult,
     _offset_to_seconds,
 )
+
+if TYPE_CHECKING:
+    from audd.advanced import Advanced, AsyncAdvanced
+    from audd.custom_catalog import AsyncCustomCatalog, CustomCatalog
+    from audd.streams import AsyncStreams, Streams
 
 API_BASE = "https://api.audd.io"
 ENTERPRISE_BASE = "https://enterprise.audd.io"
@@ -286,10 +291,11 @@ class _BaseClient:
         return RetryPolicy(RetryClass.MUTATING, self._max_retries, self._backoff_factor)
 
     def _no_retry_policy(self) -> RetryPolicy:
-        # custom_catalog.add is metered: silently retrying a transient transport
-        # failure could double-charge the same audio fingerprinting. A clean error
-        # is preferable. Reuse MUTATING semantics (no 5xx retries) but pin
-        # max_attempts=1 so even pre-upload connection errors aren't retried.
+        # custom_catalog.add is sent once and never retried automatically: the
+        # caller sees the error and decides whether to send it again (an upload
+        # to an audio_id that already holds a song replaces it). MUTATING
+        # semantics (no 5xx retries) with max_attempts=1, so pre-upload
+        # connection errors aren't retried either.
         return RetryPolicy(RetryClass.MUTATING, max_attempts=1, backoff_factor=self._backoff_factor)
 
 
@@ -329,15 +335,15 @@ class AudD(_BaseClient):
             timeouts=ENTERPRISE_TIMEOUTS,
             httpx_client=httpx_client,
         )
-        self._streams: Any = None
-        self._custom_catalog: Any = None
-        self._advanced: Any = None
+        self._streams: Streams | None = None
+        self._custom_catalog: CustomCatalog | None = None
+        self._advanced: Advanced | None = None
 
     def _http_layers(self) -> Iterable[Any]:
         return (self._http, self._enterprise_http)
 
     @property
-    def streams(self) -> Any:
+    def streams(self) -> Streams:
         if self._streams is None:
             from audd.streams import Streams
 
@@ -348,7 +354,7 @@ class AudD(_BaseClient):
         return self._streams
 
     @property
-    def custom_catalog(self) -> Any:
+    def custom_catalog(self) -> CustomCatalog:
         if self._custom_catalog is None:
             from audd.custom_catalog import CustomCatalog
 
@@ -356,7 +362,7 @@ class AudD(_BaseClient):
         return self._custom_catalog
 
     @property
-    def advanced(self) -> Any:
+    def advanced(self) -> Advanced:
         if self._advanced is None:
             from audd.advanced import Advanced
 
@@ -533,15 +539,15 @@ class AsyncAudD(_BaseClient):
             timeouts=ENTERPRISE_TIMEOUTS,
             httpx_client=httpx_client,
         )
-        self._streams: Any = None
-        self._custom_catalog: Any = None
-        self._advanced: Any = None
+        self._streams: AsyncStreams | None = None
+        self._custom_catalog: AsyncCustomCatalog | None = None
+        self._advanced: AsyncAdvanced | None = None
 
     def _http_layers(self) -> Iterable[Any]:
         return (self._http, self._enterprise_http)
 
     @property
-    def streams(self) -> Any:
+    def streams(self) -> AsyncStreams:
         if self._streams is None:
             from audd.streams import AsyncStreams
 
@@ -552,7 +558,7 @@ class AsyncAudD(_BaseClient):
         return self._streams
 
     @property
-    def custom_catalog(self) -> Any:
+    def custom_catalog(self) -> AsyncCustomCatalog:
         if self._custom_catalog is None:
             from audd.custom_catalog import AsyncCustomCatalog
 
@@ -560,7 +566,7 @@ class AsyncAudD(_BaseClient):
         return self._custom_catalog
 
     @property
-    def advanced(self) -> Any:
+    def advanced(self) -> AsyncAdvanced:
         if self._advanced is None:
             from audd.advanced import AsyncAdvanced
 

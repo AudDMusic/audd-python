@@ -13,12 +13,13 @@ import csv
 import os
 import signal
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from types import FrameType
 from typing import Any
 
-from audd import AudD, AudDInvalidRequestError
+from audd import AudD, AudDAPIError, StreamCallbackMatch, StreamCallbackNotification
 
 # audd.tech/empty/ is a stable AudD-operated URL that returns 200 OK; using it
 # as the callback URL lets longpoll deliver events even when you have no real
@@ -50,40 +51,37 @@ def get_existing_callback_url(audd: AudD) -> str | None:
     """Return the configured callback URL, or None if none is set."""
     try:
         return audd.streams.get_callback_url()
-    except AudDInvalidRequestError as exc:
+    except AudDAPIError as exc:
         if exc.error_code == _NO_CALLBACK_ERROR_CODE:
             return None
         raise
 
 
-def write_result_rows(payload: dict[str, Any], writer: Any, fh: Any) -> int:
-    """Append one CSV row per match in `payload['result']`. Returns row count."""
-    inner = payload.get("result") or {}
-    radio_id = inner.get("radio_id", "")
-    matches = inner.get("results") or []
-    rows = 0
-    for m in matches:
+def write_match_rows(match: StreamCallbackMatch, writer: Any, fh: Any) -> int:
+    """Append one CSV row per song in the match (top match + alternatives)."""
+    songs = [s for s in (match.song, *match.alternatives) if s is not None]
+    for song in songs:
         writer.writerow([
             utc_now_iso(),
-            radio_id,
-            m.get("score", ""),
-            m.get("artist", ""),
-            m.get("title", ""),
-            m.get("album", ""),
-            m.get("song_link", ""),
+            match.radio_id if match.radio_id is not None else "",
+            song.score if song.score is not None else "",
+            song.artist or "",
+            song.title or "",
+            song.album or "",
+            song.song_link or "",
         ])
-        rows += 1
     fh.flush()
-    return rows
+    return len(songs)
 
 
-def handle_notification(payload: dict[str, Any]) -> None:
-    n = payload.get("notification") or {}
-    msg = (
-        f"notification radio={n.get('radio_id')} "
-        f"code={n.get('notification_code')}: {n.get('notification_message')}"
-    )
-    print(msg, file=sys.stderr)
+def print_notifications(notifications: Any) -> None:
+    n: StreamCallbackNotification
+    for n in notifications:
+        print(
+            f"notification radio={n.radio_id} "
+            f"code={n.notification_code}: {n.notification_message}",
+            file=sys.stderr,
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -141,12 +139,16 @@ def main() -> None:
     rows_written = 0
 
     try:
-        for payload in audd.streams.longpoll(category, timeout=50):
-            if "result" in payload:
-                rows_written += write_result_rows(payload, writer, fh)
-            elif "notification" in payload:
-                handle_notification(payload)
-            # `{"timeout": ...}` envelopes mean "no events this window" — ignore.
+        with audd.streams.longpoll(category, timeout=50) as poll:
+            threading.Thread(
+                target=print_notifications, args=(poll.notifications,), daemon=True,
+            ).start()
+            for match in poll.matches:
+                rows_written += write_match_rows(match, writer, fh)
+            # matches ends only when the subscription stops; an error that
+            # ended it is waiting here.
+            for err in poll.errors:
+                raise err
     except KeyboardInterrupt:
         print("\nstopping...", file=sys.stderr)
     finally:

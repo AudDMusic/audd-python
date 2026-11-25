@@ -201,14 +201,14 @@ from audd import AudD
 
 audd = AudD(
     "your-token",
-    max_retries=3,            # per-call retry budget
+    max_retries=3,            # attempts per call, the first one included
     backoff_factor=0.5,       # initial backoff seconds (jittered)
-    httpx_client=httpx.Client(proxy="http://corp-proxy:8080"),
+    httpx_client=httpx.Client(proxy="http://corp-proxy:8080", timeout=60.0),
     on_event=lambda e: print(e),
 )
 ```
 
-**Timeouts.** The default `httpx` timeouts are 30s connect / 60s read for standard endpoints, and 30s connect / 1 hour read for the enterprise endpoint (which can legitimately process multi-hour files). Override per call with `timeout=` (seconds).
+**Timeouts.** The default `httpx` timeouts are 30s connect / 60s read for standard endpoints, 30s connect / 1 hour read for the enterprise endpoint (which can legitimately process multi-hour files), and the poll's `timeout` plus 10s read for longpoll. Override per call with `timeout=` (seconds) on `recognize` and `recognize_enterprise`.
 
 **Retries.** Calls are classified by cost and retried accordingly:
 
@@ -217,13 +217,13 @@ audd = AudD(
 | `RECOGNITION` | `recognize`, `recognize_enterprise`, `advanced.*` | connection errors **before** the upload completes, and 5xx responses |
 | `READ` | `streams.list`, `streams.get_callback_url`, longpoll | any network error, plus 408, 429, and 5xx |
 | `MUTATING` | `streams.set_callback_url`, `streams.add`, `streams.delete` | connection errors **before** the upload completes — never 5xx (the change may already have been applied) |
-| — | `custom_catalog.add` | never retried — the upload is metered, and re-sending it could double-bill |
+| — | `custom_catalog.add` | never retried automatically — check the error before sending it again |
 
 `RECOGNITION` will not double-bill your account: once the upload has finished, a timeout or dropped connection while waiting for the result is surfaced rather than retried, because the server may already be processing the audio.
 
-**Custom HTTP client.** Inject your own `httpx.Client` (sync) or `httpx.AsyncClient` (async) to add proxies, mTLS, custom transports, or shared connection pools. The SDK adds its `User-Agent` if you don't set one.
+**Custom HTTP client.** Inject your own `httpx.Client` (sync) or `httpx.AsyncClient` (async) to add proxies, mTLS, custom transports, or shared connection pools. The SDK adds its `User-Agent` if you don't set one. Standard endpoints use your client's own timeouts, so set `timeout=` on it (httpx defaults to 5s); the enterprise endpoint and longpoll always get the timeouts above.
 
-**Inspection.** Pass an `on_event=` callable to receive a frozen `AudDEvent` for every request / response / exception — useful for metrics, tracing, or dropping a `request_id` into your logs. Events never carry the api_token or request bytes; exceptions raised from the hook are swallowed so observability can't break the request path.
+**Inspection.** Pass an `on_event=` callable to receive a frozen `AudDEvent` for every `recognize` / `recognize_enterprise` request, response, and exception — useful for metrics, tracing, or dropping a `request_id` into your logs. Events never carry the api_token or request bytes; exceptions raised from the hook are swallowed so observability can't break the request path.
 
 **Concurrency.** A single `AudD` (or `AsyncAudD`) instance is safe to share across threads, asyncio tasks, or worker processes — construct it once at startup and reuse it. The recommended pattern is one client per process.
 
@@ -320,7 +320,11 @@ radio_id = 1  # any integer you choose — your handle for this stream
 with audd.streams.longpoll(radio_id=radio_id, timeout=30) as poll:
     for match in poll.matches:
         print(match.song.artist, "—", match.song.title)
+    for err in poll.errors:
+        raise err
 ```
+
+`poll.matches` keeps going until the subscription stops: on `poll.close()`, or on an error — an HTTP 4xx, a request the server rejects, or a network failure or 5xx that outlasts `max_retries`. The error is then waiting on `poll.errors`, which the second loop raises. Each request waits up to `timeout` seconds (1–120, default 50) for new events, and the next request asks only for events newer than the last one seen.
 
 To consume matches, notifications, and errors concurrently, use `AsyncAudD` and `asyncio.gather`:
 
@@ -359,6 +363,8 @@ with LongpollConsumer(category="abc123def") as consumer:
     with consumer.iterate(timeout=30) as poll:
         for match in poll.matches:
             print(match.song.artist, "—", match.song.title)
+        for err in poll.errors:
+            raise err
 ```
 
 `AsyncLongpollConsumer` is the async equivalent.
@@ -372,6 +378,8 @@ with LongpollConsumer(category="abc123def") as consumer:
 ```python
 audd.custom_catalog.add(audio_id=42, source="https://my.song.mp3")
 ```
+
+`add()` is sent once and never retried automatically: check the error before sending it again (an upload to an `audio_id` that already holds a song replaces it).
 
 When a later `recognize()` or `recognize_enterprise()` call matches one of your songs, the match carries the same `audio_id` and `is_custom_match` is `True`:
 
